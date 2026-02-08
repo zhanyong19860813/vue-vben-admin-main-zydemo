@@ -31,7 +31,7 @@ catalogs:
       specifier: ^9.9.0
       version: 9.9.0
     '@iconify/json':
-      specifier: ^2.2.406
+      specifier: 2.2.407
       version: 2.2.407
     '@iconify/tailwind':
       specifier: ^1.2.0
@@ -154,7 +154,7 @@ catalogs:
       specifier: ^3.0.3
       version: 3.0.3
     ant-design-vue:
-      specifier: ^4.2.6
+      specifier: 4.2.6
       version: 4.2.6
     archiver:
       specifier: ^7.0.1
@@ -711,6 +711,16 @@ importers:
       vue-router:
         specifier: 'catalog:'
         version: 4.6.3(vue@3.5.24(typescript@5.9.3))
+    devDependencies:
+      '@iconify/json':
+        specifier: 'catalog:'
+        version: 2.2.407
+      '@purge-icons/core':
+        specifier: ^0.10.0
+        version: 0.10.0
+      '@purge-icons/generated':
+        specifier: ^0.10.0
+        version: 0.10.0
 
   apps/web-ele:
     dependencies:
@@ -3654,6 +3664,14 @@ packages:
   '@iconify-json/vscode-icons@1.2.34':
     resolution: {integrity: sha512-51TK8qez3kJz103VUhvB+slZ2aaVLHemZ+m88Eki2jvfxyRF8B/B153t9IqEFeGaMNxCIkoiudhStThpJp4Vmg==}
 
+  '@iconify/iconify@2.1.2':
+    resolution: {integrity: sha512-QcUzFeEWkE/mW+BVtEGmcWATClcCOIJFiYUD/PiCWuTcdEA297o8D4oN6Ra44WrNOHu1wqNW4J0ioaDIiqaFOQ==}
+    deprecated: no longer maintained, switch to modern iconify-icon web component
+
+  '@iconify/iconify@3.1.1':
+    resolution: {integrity: sha512-1nemfyD/OJzh9ALepH7YfuuP8BdEB24Skhd8DXWh0hzcOxImbb1ZizSZkpCzAwSZSGcJFmscIBaBQu+yLyWaxQ==}
+    deprecated: no longer maintained, switch to modern iconify-icon web component
+
   '@iconify/json@2.2.407':
     resolution: {integrity: sha512-GI81Sh05/31UyyIK2+hhMpzJb3PgvAJq/w6B0xgfQcTMwsWOaLL0QV50WNgoIHltt8FvqgR+BK/nOGnrTqugiQ==}
 
@@ -4027,6 +4045,12 @@ packages:
   '@publint/pack@0.1.2':
     resolution: {integrity: sha512-S+9ANAvUmjutrshV4jZjaiG8XQyuJIZ8a4utWmN/vW1sgQ9IfBnPndwkmQYw53QmouOIytT874u65HEmu6H5jw==}
     engines: {node: '>=18'}
+
+  '@purge-icons/core@0.10.0':
+    resolution: {integrity: sha512-AtJbZv5Yy+vWX5v32DPTr+CW7AkSK8HJx52orDbrYt/9s4lGM2t4KKAmwaTQEH2HYr2HVh1mlqs54/S1s3WT1g==}
+
+  '@purge-icons/generated@0.10.0':
+    resolution: {integrity: sha512-I+1yN7/yDy/eZzfhAZqKF8Z6FM8D/O1vempbPrHJ0m9HlZwvf8sWXOArPJ2qRQGB6mJUVSpaXkoGBuoz1GQX5A==}
 
   '@rolldown/pluginutils@1.0.0-beta.29':
     resolution: {integrity: sha512-NIJgOsMjbxAXvoGq/X0gD7VPMQ8j9g0BiDaNjVNVjvl+iKXxL3Jre0v31RmBYeLEmkbj2s02v8vFTbUXi5XS2Q==}
@@ -5249,6 +5273,9 @@ packages:
     peerDependencies:
       axios: '>= 0.17.0'
 
+  axios@0.26.1:
+    resolution: {integrity: sha512-fPwcX4EvnSHuInCMItEhAGnaSEXRBjtzh9fOtsE6E1G6p7vl7edEeZe11QHf18+6+9gR5PbKV/sGKNaD8YaMeA==}
+
   axios@1.13.2:
     resolution: {integrity: sha512-VPk9ebNqPcy5lRGuSlKx752IlDatOjT9paPlm8A7yOuW2Fbvp4X3JznJtT4f0GzGLLiWE9W8onz51SqLYwzGaA==}
 
@@ -5734,6 +5761,9 @@ packages:
     resolution: {integrity: sha512-+/HKd6EgcQCJGh2PSjZuUitQBQynKor4wrFbRg4DtAgS1aWO+gU52xpH7M9ScGgXSYmAVS9bIJ8EzuaGw0oNAw==}
     engines: {node: '>=10.14', npm: '>=6', yarn: '>=1'}
     hasBin: true
+
+  cross-fetch@3.2.0:
+    resolution: {integrity: sha512-Q+xVJLoGOeIMXZmbUK4HYk+69cQH6LudR0Vu/pRm2YlU/hDV9CiS0gKUMaWY5f2NeUH9C1nV3bsTlCo0FsTV1Q==}
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -12724,6 +12754,16 @@ snapshots:
     dependencies:
       '@iconify/types': 2.0.0
 
+  '@iconify/iconify@2.1.2':
+    dependencies:
+      cross-fetch: 3.2.0
+    transitivePeerDependencies:
+      - encoding
+
+  '@iconify/iconify@3.1.1':
+    dependencies:
+      '@iconify/types': 2.0.0
+
   '@iconify/json@2.2.407':
     dependencies:
       '@iconify/types': 2.0.0
@@ -13203,6 +13243,21 @@ snapshots:
   '@poppinss/exception@1.2.2': {}
 
   '@publint/pack@0.1.2': {}
+
+  '@purge-icons/core@0.10.0':
+    dependencies:
+      '@iconify/iconify': 2.1.2
+      axios: 0.26.1(debug@4.4.3)
+      debug: 4.4.3
+      fast-glob: 3.3.3
+      fs-extra: 10.1.0
+    transitivePeerDependencies:
+      - encoding
+      - supports-color
+
+  '@purge-icons/generated@0.10.0':
+    dependencies:
+      '@iconify/iconify': 3.1.1
 
   '@rolldown/pluginutils@1.0.0-beta.29': {}
 
@@ -14497,9 +14552,15 @@ snapshots:
       fast-deep-equal: 3.1.3
       is-buffer: 2.0.5
 
+  axios@0.26.1(debug@4.4.3):
+    dependencies:
+      follow-redirects: 1.15.11(debug@4.4.3)
+    transitivePeerDependencies:
+      - debug
+
   axios@1.13.2:
     dependencies:
-      follow-redirects: 1.15.11
+      follow-redirects: 1.15.11(debug@4.4.3)
       form-data: 4.0.4
       proxy-from-env: 1.1.0
     transitivePeerDependencies:
@@ -15012,6 +15073,12 @@ snapshots:
   cross-env@7.0.3:
     dependencies:
       cross-spawn: 7.0.6
+
+  cross-fetch@3.2.0:
+    dependencies:
+      node-fetch: 2.7.0
+    transitivePeerDependencies:
+      - encoding
 
   cross-spawn@7.0.6:
     dependencies:
@@ -16136,7 +16203,9 @@ snapshots:
     dependencies:
       tabbable: 6.3.0
 
-  follow-redirects@1.15.11: {}
+  follow-redirects@1.15.11(debug@4.4.3):
+    optionalDependencies:
+      debug: 4.4.3
 
   for-each@0.3.5:
     dependencies:

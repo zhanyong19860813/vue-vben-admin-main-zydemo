@@ -3,6 +3,10 @@ import { unmountGlobalLoading } from '@vben/utils';
 
 import { overridesPreferences } from './preferences';
 
+// import Antd from 'ant-design-vue';
+// import 'ant-design-vue/dist/antd.css';
+ 
+
 /**
  * 应用初始化完成之后再进行页面加载渲染
  */
@@ -19,6 +23,7 @@ async function initApplication() {
     overrides: overridesPreferences,
   });
 
+ 
   // 启动应用并挂载
   // vue应用主要逻辑及视图
   const { bootstrap } = await import('./bootstrap');

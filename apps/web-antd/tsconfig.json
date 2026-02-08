@@ -4,7 +4,8 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "#/*": ["./src/*"]
+      "#/*": ["./src/*"],
+       "@vben/components/*": ["./node_modules/@vben/components/*"]
     }
   },
   "references": [{ "path": "./tsconfig.node.json" }],

@@ -46,5 +46,10 @@
     "pinia": "catalog:",
     "vue": "catalog:",
     "vue-router": "catalog:"
+  },
+  "devDependencies": {
+    "@iconify/json": "catalog:",
+    "@purge-icons/core": "^0.10.0",
+    "@purge-icons/generated": "^0.10.0"
   }
 }

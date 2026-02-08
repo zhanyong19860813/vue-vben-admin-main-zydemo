@@ -3,144 +3,302 @@ import type { RouteRecordStringComponent } from '@vben/types';
 import { requestClient } from '#/api/request';
 
 import { useAuthStore } from '#/store/auth';
- 
+
 
 /**
  * 获取用户所有菜单
  */
 export async function getAllMenusApi() {
 
-        // 拿到当前登录用户信息
+  // 拿到当前登录用户信息
   const authStore = useAuthStore();
   const userInfo = await authStore.fetchUserInfo(); // 确保有最新信息
   console.log('当前登录用户 userInfo= ', userInfo);
 
-    console.log('当前 getAllMenusApi  ');
- //请求后台  返回数据
- const data= await requestClient.get('http://localhost:5155/api/Menu/GetMenuFromDb').then((res) => {
-   
+  console.log('当前 getAllMenusApi  ');
+  //请求后台  返回数据
+  const data = await requestClient.get('http://localhost:5155/api/Menu/GetMenuFromDb').then((res) => {
+
     console.log('当前 getAllMenusApi res= ', res);
-   
+
+    const datamenu=[
+  {
+    "name": "Sys",
+    "path": "/Sys",
+    "redirect": "/Sys/UserRoleMapping",
+    "meta": {
+      "title": "系统设置",
+      "icon": "mdi:appstore",
+      "hideInTab": true
+    },
+    "children": [
+      {
+        "name": "UserRoleMapping",
+        "path": "UserRoleMapping",
+        "component": "System/UserRoleMapping",
+        "meta": {
+          "title": "角色",
+          "icon": "mdi:appstore"
+        }
+      },
+      {
+        "name": "AddMenu",
+        "path": "AddMenu",
+        "component": "demos/menu/index",
+        "meta": {
+          "title": "添加菜单",
+          "icon": "mdi:appstore"
+        }
+      },
+      {
+        "name": "AddMenuNew",
+        "path": "AddMenuNew",
+        "component": "demos/menu/menu",
+        "meta": {
+          "title": "新菜单列表",
+          "icon": "mdi:appstore"
+        }
+      },
+      {
+        "name": "tabledemo",
+        "path": "TableDemo",
+        "component": "System/Tabledemo",
+        "meta": {
+          "title": "多页签案例",
+          "icon": "mdi:appstore"
+        }
+      },
+      {
+        "name": "UserRoleMappingTest",
+        "path": "UserRoleMappingTest",
+        "component": "System/UserRoleMappingTest",
+        "meta": {
+          "title": "测试角色表格",
+          "icon": "mdi:appstore"
+        }
+      },
+      {
+        "name": "DeptInfo",
+        "path": "DeptInfo",
+        "component": "System/DeptInfo",
+        "meta": {
+          "title": "部门管理",
+          "icon": "mdi:appstore"
+        }
+      }
+    ]
+  },
+  {
+    "name": "Dashboard",
+    "path": "/",
+    "redirect": "/analytics",
+    "meta": {
+      "title": "page.dashboard.title",
+      "icon": "mdi:appstore",
+      "hideInTab": true
+    },
+    "children": [
+      {
+        "name": "SimpleTable",
+        "path": "simple-table",
+        "component": "demos/simple-table/index",
+        "meta": {
+          "title": "简单表格"
+        }
+      },
+      {
+        "name": "Workspace",
+        "path": "workspace",
+        "component": "dashboard/workspace/index",
+        "meta": {
+          "title": "tetttttt"
+        }
+      },
+      {
+        "name": "Analytics",
+        "path": "analytics",
+        "component": "dashboard/analytics/index",
+        "meta": {
+          "title": "test",
+          "affixTab": true
+        }
+      },
+      {
+        "name": "UrlTable",
+        "path": "url-table",
+        "component": "demos/simple-table/urltable",
+        "meta": {
+          "title": "表格后台数据后台",
+          "affixTab": true
+        }
+      }
+    ]
+  }
+]
+    ;
+
+
+
+    // res = [
+    //   {
+    //     "name": "Sys",
+    //     "path": "/Sys",
+    //     "meta": {
+    //       "title": "系统设置",
+    //       "icon": "mdi:appstore"
+    //     },
+    //     "children": [
+    //       {
+    //         "name": "UserRoleMapping",
+    //         "path": "UserRoleMapping",      // ✅ 相对路径
+    //         "component": "System/UserRoleMapping",
+    //         "meta": {
+    //           "title": "角色"
+    //         }
+    //       },
+    //       {
+    //         "name": "DeptInfo",
+    //         "path": "DeptInfo",
+    //         "component": "System/DeptInfo",
+    //         "meta": {
+    //           "title": "部门管理"
+    //         }
+    //       }
+    //     ]
+    //   },{
+    //     "name": "Analytics",
+    //     "path": "/analytics",
+    //     "component": "/dashboard/analytics/index",
+    //     "meta": {
+    //       "title": "test",
+    //       "icon": null,
+    //       "affixTab": true
+    //     },
+    //     "children": []
+    //   },
+    // ]
+    // ;
+
     return res;
   });
 
   const jsonStr = JSON.stringify(data, null, 2);
- console.log('当前 getAllMenusApi data= ', data);
+  console.log('当前 getAllMenusApi data= ', data);
   console.log('当前 getAllMenusApi data= ', jsonStr);
-   return data;
+  return data;
 
 
 
 
   const datastr = [
-  {
-    meta: {
-      order: -1,
-      title: 'page.dashboard.title',
-    },
-    name: 'Dashboard',
-    path: '/',
-    redirect: '/analytics',
-    children: [
-       {
-        name: 'Analytics',
-        path: '/analytics',
-        // 这里为页面的路径，需要去掉 views/ 和 .vue
-        component: '/dashboard/analytics/index',
-        meta: {
-          affixTab: true,
-          title: 'test',
+    {
+      meta: {
+        order: -1,
+        title: 'page.dashboard.title',
+      },
+      name: 'Dashboard',
+      path: '/',
+      redirect: '/analytics',
+      children: [
+        {
+          name: 'Analytics',
+          path: '/analytics',
+          // 这里为页面的路径，需要去掉 views/ 和 .vue
+          component: '/dashboard/analytics/index',
+          meta: {
+            affixTab: true,
+            title: 'test',
+          },
         },
-      },
-      {
-        name: "simple-table",
-        path: "SimpleTable",
-        component: "demos/simple-table/index",
-        meta: {
-          affixTab: true,
-          title: "简单表格"
-        }
-      },
-      {
-        name: "UrlTable",
-        path: "url-table",
-        component: "demos/simple-table/urltable",
-        meta: {
-          title: "表格后台数据",
-          affixTab: true,
-         
-        }
-      }
+        {
+          name: "simple-table",
+          path: "SimpleTable",
+          component: "demos/simple-table/index",
+          meta: {
+            affixTab: true,
+            title: "简单表格"
+          }
+        },
+        {
+          name: "UrlTable",
+          path: "url-table",
+          component: "demos/simple-table/urltable",
+          meta: {
+            title: "表格后台数据",
+            affixTab: true,
 
-      //  {
-      //   path: "simple-table",
-      //   name: "SimpleTable",
-      //   component: "demos/simple-table/index",
-      //   meta: {
-      //     title: "简单表格"
-      //   }
-      // },
-      //       {
-      //               path: "url-table",
-      //               name: "UrlTable",
-      //               component: "demos/simple-table/urltable",
-      //               meta: {
-      //                  affixTab: true,
-      //                   title: "表格后台数据"
-      //               }
-      //           }
-    ]
-  }
-];
-return  datastr;
-  const dashboardMenus = [
-  {
-    meta: {
-      order: -1,
-      title: 'page.dashboard.title',
-    },
-    name: 'Dashboard',
-    path: '/',
-    redirect: '/analytics',
-    children: [
-      {
-        name: 'Analytics',
-        path: '/analytics',
-        // 这里为页面的路径，需要去掉 views/ 和 .vue
-        component: '/dashboard/analytics/index',
-        meta: {
-          affixTab: true,
-          title: 'test',
-        },
-      },
-      {
-        name: 'Workspace',
-        path: '/workspace',
-        component: '/dashboard/workspace/index',
-        meta: {
-          title: 'tetttttt',
-        },
-      },
-       {
-        path: "simple-table",
-        name: "SimpleTable",
-        component: "demos/simple-table/index",
-        meta: {
-          title: "简单表格"
+          }
         }
+
+        //  {
+        //   path: "simple-table",
+        //   name: "SimpleTable",
+        //   component: "demos/simple-table/index",
+        //   meta: {
+        //     title: "简单表格"
+        //   }
+        // },
+        //       {
+        //               path: "url-table",
+        //               name: "UrlTable",
+        //               component: "demos/simple-table/urltable",
+        //               meta: {
+        //                  affixTab: true,
+        //                   title: "表格后台数据"
+        //               }
+        //           }
+      ]
+    }
+  ];
+  return datastr;
+  const dashboardMenus = [
+    {
+      meta: {
+        order: -1,
+        title: 'page.dashboard.title',
       },
-            {
-                    path: "url-table",
-                    name: "UrlTable",
-                    component: "demos/simple-table/urltable",
-                    meta: {
-                       affixTab: true,
-                        title: "表格后台数据"
-                    }
-                }
-    ],
-  }
-   
-];
-//   return dashboardMenus;
+      name: 'Dashboard',
+      path: '/',
+      redirect: '/analytics',
+      children: [
+        {
+          name: 'Analytics',
+          path: '/analytics',
+          // 这里为页面的路径，需要去掉 views/ 和 .vue
+          component: '/dashboard/analytics/index',
+          meta: {
+            affixTab: true,
+            title: 'test',
+          },
+        },
+        {
+          name: 'Workspace',
+          path: '/workspace',
+          component: '/dashboard/workspace/index',
+          meta: {
+            title: 'tetttttt',
+          },
+        },
+        {
+          path: "simple-table",
+          name: "SimpleTable",
+          component: "demos/simple-table/index",
+          meta: {
+            title: "简单表格"
+          }
+        },
+        {
+          path: "url-table",
+          name: "UrlTable",
+          component: "demos/simple-table/urltable",
+          meta: {
+            affixTab: true,
+            title: "表格后台数据"
+          }
+        }
+      ],
+    }
+
+  ];
+  //   return dashboardMenus;
 }
