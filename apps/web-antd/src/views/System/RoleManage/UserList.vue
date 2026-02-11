@@ -33,8 +33,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
             {
               params: {
                 tableName: 'v_vben_t_sys_user_role',
-                page: 1,
-                pageSize: 20,
+                //page: 1,
+              //  pageSize: 20,
                 simpleWhere: { role_id: props.currentRoleId },
               },
             }

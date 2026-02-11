@@ -50,7 +50,7 @@ const submitSuccessCb = ref<undefined | (() => void)>();
 
 
     console.log("远程搜索数据res:", res.items);
-    const resdata= res.items.map(item=>({
+    const resdata= res.items.map((item: { username: any; id: any; code: any; name: any; })=>({
       label: item.username,
       value: item.id,
       username: item.code,
@@ -84,10 +84,9 @@ const [Form, formApi] = useVbenForm({
 
             console.log('选择的值：', value, option);
             formApi.setFieldValue('username', option.username);
-             //  formApi.setFieldValue('employee_id', option.value);
+            
             formApi.setFieldValue('name', option.name);
-            //  formApi.setFieldValue('password', '61777f2a924e9d9b2e211f583b392a94');
-            //  formApi.setFieldValue('user_type', 1);
+             
           },
           // 禁止本地过滤
           filterOption: false,
@@ -190,7 +189,7 @@ async function onSubmit(values: Record<string, any>) {
   });
 
 
-  //modalApi.lock();
+ 
  if (res.message === '保存成功') {
     message.success({
       content: '保存成功',

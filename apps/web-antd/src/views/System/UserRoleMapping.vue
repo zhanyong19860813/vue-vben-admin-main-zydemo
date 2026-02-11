@@ -394,10 +394,7 @@ const roleDelete = async () => {
 
     </Card>  
       <FormModal />
-  
   </ColPage>  
- 
-   
 </template>    
 
  

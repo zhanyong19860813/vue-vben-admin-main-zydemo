@@ -43,7 +43,7 @@ function handleRoleChange(id: string, name: string) {
           />
         </Tabs.TabPane>
 
-        <Tabs.TabPane key="menu" tab="菜单权限">
+        <Tabs.TabPane key="menu" tab="菜单权限"   force-render>
           <MenuList :currentRoleId="currentRoleId" />
         </Tabs.TabPane>
       </Tabs>

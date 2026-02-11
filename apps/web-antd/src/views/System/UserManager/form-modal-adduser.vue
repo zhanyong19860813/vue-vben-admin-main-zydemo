@@ -51,30 +51,9 @@ const fetching = ref(false);
       value: item.id,
       username: item.code
     }));
-  // const mockData = [
-  //     { id: '1', name: `${currentKeyword}-1` },
-  //     { id: '2', name: `${currentKeyword}-2` },
-  //     { id: '3', name: `${currentKeyword}-3` },
-  //     { id: '4', name: `${currentKeyword}-4` },
-  //   ];
-  //    fetching.value = false;
-  //   // 转换为Select需要的格式
-  //   const resdata= mockData.map(item => ({
-  //     label: item.name,
-  //     value: item.id,
-  //   }));
 
     return Promise.resolve(resdata);
-  // return new Promise((resolve) => {
-  //   setTimeout(() => {
-  //     const options = Array.from({ length: 10 }).map((_, index) => ({
-  //       label: `${keyword}-${index}`,
-  //       value: `${keyword}-${index}`,
-  //     }));
-  //     resolve(options);
-  //     fetching.value = false;
-  //   }, 1000);
-  // });
+  
 }
 
 const [Form, formApi] = useVbenForm({
