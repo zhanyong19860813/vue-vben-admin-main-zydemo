@@ -1,18 +1,15 @@
 <script setup lang="ts">
 import { Button, message } from 'ant-design-vue';
-import { ref, computed } from 'vue';
+import { ref } from 'vue';
 import axios from 'axios';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { requestClient } from '#/api/request';
-import type { QueryTableSchema, QueryTableToolbarAction } from './types';
+import type { QueryTableSchema } from './types';
 
 const props = defineProps<{
   schema: QueryTableSchema;
 }>();
 
-/**
- * 当前查询条件（用于导出）
- */
 const currentQuery = ref<Record<string, any>>({});
 
 /**
@@ -24,6 +21,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async ({ page, sort }, formValues) => {
+
           // 🔥 过滤空值
           const cleanWhere = Object.fromEntries(
             Object.entries(formValues || {}).filter(
@@ -37,11 +35,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
             TableName: props.schema.tableName,
             Page: page.currentPage,
             PageSize: page.pageSize,
-            SortBy:
-              sort?.field ||
-              props.schema.grid.sortConfig?.defaultSort?.field,
-            SortOrder:
-              sort?.order?.toLowerCase() ||
+            SortBy: sort?.field || props.schema.grid.sortConfig?.defaultSort?.field,
+            SortOrder: sort?.order?.toLowerCase() ||
               props.schema.grid.sortConfig?.defaultSort?.order ||
               'asc',
             SimpleWhere: cleanWhere,
@@ -51,13 +46,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
     },
   },
   formOptions: props.schema.form,
-});
-
-/**
- * schema 中配置的 toolbar actions
- */
-const toolbarActions = computed<QueryTableToolbarAction[]>(() => {
-  return props.schema.toolbar?.actions || [];
 });
 
 /**
@@ -76,15 +64,11 @@ const handleDelete = async () => {
     return;
   }
 
-  const primaryKey = props.schema.primaryKey || 'FID';
-  const deleteEntityName =
-    props.schema.deleteEntityName || props.schema.tableName;
-
   await axios.post(props.schema.api.delete, [
     {
-      tablename: deleteEntityName,
-      key: primaryKey,
-      Keys: rows.map((r: any) => r[primaryKey]),
+      tablename: props.schema.tableName,
+      key: 'FID', // 🔥 默认主键
+      Keys: rows.map((r: any) => r.FID),
     },
   ]);
 
@@ -100,24 +84,34 @@ const handleExport = async () => {
 
   const sort = gridApi.grid?.getSortColumns?.()?.[0];
 
+   // ① 构建 QueryField（如果后端支持的话）
   const queryField = props.schema.grid.columns
-    ?.filter((c: any) => c.field)
-    .map((c: any) => {
-      if (c.title) {
-        return `${c.field} as ${c.title}`;
-      }
-      return c.field;
-    })
-    .join(',');
+  ?.filter((c: any) => c.field)
+  .map((c: any) => {
+    // 如果有标题就用标题
+    if (c.title) {
+      return `${c.field} as ${c.title}`;
+    }
+    return c.field;
+  })
+  .join(',');
 
   const res = await axios.post(
     props.schema.api.export,
     {
       TableName: props.schema.tableName,
+
+      // 🔥 当前查询条件
       SimpleWhere: currentQuery.value,
+
+      // 🔥 当前排序
       SortBy: sort?.field || 'Name',
       SortOrder: sort?.order?.toLowerCase() || 'asc',
-      QueryField: queryField,
+
+      // 🔥 当前列
+      QueryField:  queryField,
+
+        
     },
     { responseType: 'blob' }
   );
@@ -128,86 +122,39 @@ const handleExport = async () => {
   a.href = url;
   a.download = `${props.schema.title}.xlsx`;
   a.click();
-  window.URL.revokeObjectURL(url);
 };
-
-/**
- * 统一处理 schema toolbar action
- */
-const handleToolbarClick = async (btn: QueryTableToolbarAction) => {
-  switch (btn.action) {
-    case 'add':
-      message.info('点击新增（由业务页面或后续扩展实现）');
-      break;
-
-    case 'deleteSelected':
-      if (btn.confirm) {
-        if (!window.confirm(btn.confirm)) return;
-      }
-      await handleDelete();
-      break;
-
-    case 'export':
-      await handleExport();
-      break;
-
-    case 'reload':
-      gridApi.reload();
-      break;
-
-    default:
-      message.warning(`未识别的 action：${btn.action}`);
-  }
-};
-
-defineExpose({
-  gridApi,
-});
 </script>
 
 <template>
   <Grid :table-title="schema.title">
     <template #toolbar-tools>
 
-      <!-- 🔥 ① schema 配置的 toolbar 按钮 -->
-      <Button
-        v-for="btn in toolbarActions"
-        :key="btn.key"
-        :type="btn.type || 'default'"
-        class="ml-2"
-        @click="handleToolbarClick(btn)"
-      >
-        {{ btn.label }}
-      </Button>
-
-      <!-- 🔥 ② 内置通用按钮（仍然保留） -->
+      <!-- 删除 -->
       <Button
         v-if="schema.api.delete"
         danger
-        class="ml-2"
         @click="handleDelete"
       >
-        删除 
+        删除
       </Button>
 
+      <!-- 导出 -->
       <Button
         v-if="schema.api.export"
         class="ml-2"
         @click="handleExport"
       >
-        导出 
+        导出
       </Button>
 
+      <!-- 刷新 -->
       <Button
         class="ml-2"
         type="primary"
         @click="gridApi.reload()"
       >
-        刷新 
+        刷新
       </Button>
-
-      <!-- 🔥 ③ 页面级自定义按钮（slot，复杂场景用） -->
-      <slot name="toolbar-extra" :gridApi="gridApi" />
 
     </template>
   </Grid>

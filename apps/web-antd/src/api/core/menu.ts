@@ -21,116 +21,175 @@ export async function getAllMenusApi() {
 
     console.log('当前 getAllMenusApi res= ', res);
 
-    const datamenu=[
+    const datamenu=  [
   {
     "name": "Sys",
     "path": "/Sys",
-    "redirect": "/Sys/UserRoleMapping",
     "meta": {
       "title": "系统设置",
       "icon": "mdi:appstore",
-      "hideInTab": true
+      "affixTab": null
     },
     "children": [
       {
+        "name": "TestEntity1",
+        "path": "/EntityList/index1",
+        "component": "/EntityList/index",
+        "meta": {
+             "title": "测试实体1",
+          "icon": "mdi:appstore",
+          "affixTab": null,
+          "query": {
+            "entityname": "TestEntity1"
+          } 
+        },
+        "children": []
+      },
+      {
+        "name": "TestEntity2",
+        "path": "/EntityList/index",
+        "component": "/EntityList/index",
+        "meta": {
+             "title": "测试实体2",
+          "icon": "mdi:appstore",
+          "affixTab": null,
+          "query": {
+            "entityname": "TestEntity2"
+          } 
+        },
+        "children": []
+      },
+      {
         "name": "UserRoleMapping",
-        "path": "UserRoleMapping",
-        "component": "System/UserRoleMapping",
+        "path": "/UserRoleMapping",
+        "component": "System/UserRoleMapping/UserRoleMapping",
         "meta": {
           "title": "角色",
-          "icon": "mdi:appstore"
-        }
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
       },
       {
         "name": "AddMenu",
-        "path": "AddMenu",
+        "path": "/AddMenu",
         "component": "demos/menu/index",
         "meta": {
           "title": "添加菜单",
-          "icon": "mdi:appstore"
-        }
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
+      },
+      {
+        "name": "TestQueryTable",
+        "path": "/Test/TestQueryTable",
+        "component": "/company/index",
+        "meta": {
+          "title": "测试QueryTable",
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
+      },
+      {
+        "name": "TestAddMenu",
+        "path": "demos/MenuAdd",
+        "component": "demos/MenuAdd",
+        "meta": {
+          "title": "测试addmenu",
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
       },
       {
         "name": "AddMenuNew",
-        "path": "AddMenuNew",
+        "path": "/AddMenuNew",
         "component": "demos/menu/menu",
         "meta": {
           "title": "新菜单列表",
-          "icon": "mdi:appstore"
-        }
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
       },
       {
         "name": "tabledemo",
-        "path": "TableDemo",
+        "path": "/TableDemo",
         "component": "System/Tabledemo",
         "meta": {
           "title": "多页签案例",
-          "icon": "mdi:appstore"
-        }
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
       },
       {
         "name": "UserRoleMappingTest",
-        "path": "UserRoleMappingTest",
+        "path": "/UserRoleMappingTest",
         "component": "System/UserRoleMappingTest",
         "meta": {
           "title": "测试角色表格",
-          "icon": "mdi:appstore"
-        }
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
       },
       {
         "name": "DeptInfo",
-        "path": "DeptInfo",
+        "path": "/DeptInfo",
         "component": "System/DeptInfo",
         "meta": {
           "title": "部门管理",
-          "icon": "mdi:appstore"
-        }
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
+      },
+      {
+        "name": "RoleManage",
+        "path": "System/RoleManage",
+        "component": "System/RoleManage/index",
+        "meta": {
+          "title": "角色管理",
+          "icon": "mdi:appstore",
+          "affixTab": null
+        },
+        "children": []
       }
     ]
   },
   {
     "name": "Dashboard",
     "path": "/",
-    "redirect": "/analytics",
     "meta": {
       "title": "page.dashboard.title",
       "icon": "mdi:appstore",
-      "hideInTab": true
+      "affixTab": null
     },
     "children": [
       {
         "name": "SimpleTable",
-        "path": "simple-table",
+        "path": "/simple-table",
         "component": "demos/simple-table/index",
         "meta": {
-          "title": "简单表格"
-        }
-      },
-      {
-        "name": "Workspace",
-        "path": "workspace",
-        "component": "dashboard/workspace/index",
-        "meta": {
-          "title": "tetttttt"
-        }
-      },
-      {
-        "name": "Analytics",
-        "path": "analytics",
-        "component": "dashboard/analytics/index",
-        "meta": {
-          "title": "test",
-          "affixTab": true
-        }
+          "title": "简单表格",
+          "icon": null,
+          "affixTab": null
+        },
+        "children": []
       },
       {
         "name": "UrlTable",
-        "path": "url-table",
+        "path": "/url-table",
         "component": "demos/simple-table/urltable",
         "meta": {
           "title": "表格后台数据后台",
-          "affixTab": true
-        }
+          "icon": null,
+          "affixTab": null
+        },
+        "children": []
       }
     ]
   }
@@ -178,8 +237,8 @@ export async function getAllMenusApi() {
     //   },
     // ]
     // ;
-
-    return res;
+     //return datamenu;
+     return res;
   });
 
   const jsonStr = JSON.stringify(data, null, 2);

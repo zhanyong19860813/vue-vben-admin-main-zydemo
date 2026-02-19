@@ -1,9 +1,31 @@
 import type { QueryTableSchema } from '#/components/QueryTable/types';
 
 export const companySchema: QueryTableSchema = {
-  title: '公司列表',
+  title: '公司列表1',
 
   tableName: 't_base_company',
+
+  toolbar: {
+    actions: [
+      {
+        key: 'add',
+        label: '新增schema',
+        type: 'primary',
+        action: 'add',
+      },
+      {
+        key: 'reload',
+        label: '刷新schema',
+        action: 'reload',
+      },
+      {
+        key: 'delete',
+        label: '删除schema',
+        action: 'deleteSelected',
+        confirm: '确定删除选中数据？',
+      },
+    ],
+  },
 
   form: {
     collapsed: false,
@@ -25,14 +47,14 @@ export const companySchema: QueryTableSchema = {
     ],
     pagerConfig: { enabled: true, pageSize: 10 },
     //sortConfig: { remote: true },
-     
-     sortConfig: {
-        remote: true,
-        defaultSort: {
-          field: 'Name',
-          order: 'asc',
-        },
-  },
+
+    sortConfig: {
+      remote: true,
+      defaultSort: {
+        field: 'Name',
+        order: 'asc',
+      },
+    },
     // SortBy: sort?.field || "Name",
     //     SortOrder: sort?.order?.toLowerCase() || "asc",
   },

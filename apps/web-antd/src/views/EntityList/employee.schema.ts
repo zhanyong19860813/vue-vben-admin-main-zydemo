@@ -1,16 +1,18 @@
 import type { QueryTableSchema } from '#/components/QueryTable/types';
 
-export const companySchema: QueryTableSchema = {
-  title: '公司列表',
+export const employeeSchema: QueryTableSchema = {
+  title: '人员列表',
 
-  tableName: 't_base_company',
+  tableName: 'v_t_employee_info',
+   primaryKey: 'id',
+   deleteEntityName: 't_base_employee',
 
   form: {
     collapsed: false,
     submitOnChange: true,
     schema: [
-      { component: 'Input', fieldName: 'Name', label: '公司名' },
-      { component: 'Input', fieldName: 'Location', label: '地址' },
+      { component: 'Input', fieldName: 'name', label: '姓名' },
+      { component: 'Input', fieldName: 'code', label: '工号' },
     ],
   },
 
@@ -18,10 +20,12 @@ export const companySchema: QueryTableSchema = {
     columns: [
       { type: 'checkbox', width: 80 },
       { type: 'seq', width: 60 },
-      { field: 'FID', title: 'ID', minWidth: 180 },
-      { field: 'Name', title: '公司名', sortable: true },
-      { field: 'SimpleName', title: '简称', sortable: true },
-      { field: 'Location', title: '地址', sortable: true },
+      { field: 'id', title: 'ID', minWidth: 180 },
+      { field: 'name', title: '姓名', sortable: true },
+      { field: 'code', title: '工号', sortable: true },
+      { field: 'idcard_no', title: '身份证号', sortable: true },
+      { field: 'brith_date', title: '出生日期', sortable: true },
+      { field: 'mobile_no', title: '手机号', sortable: true },
     ],
     pagerConfig: { enabled: true, pageSize: 10 },
     //sortConfig: { remote: true },
@@ -29,7 +33,7 @@ export const companySchema: QueryTableSchema = {
      sortConfig: {
         remote: true,
         defaultSort: {
-          field: 'Name',
+          field: 'code',
           order: 'asc',
         },
   },
