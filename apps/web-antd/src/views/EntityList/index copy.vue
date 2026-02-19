@@ -40,14 +40,36 @@ const currentSchema = computed(() => {
       return employeeSchema; // 兜底
   }
 });
+
+ 
 console.log('当前实体:route.meta', route.meta);
 console.log('当前实体 参数:', route.meta.query?.entityname);
 </script>
+
 <template>
- <QueryTable :schema="currentSchema">
+  <!-- <QueryTable :schema="currentSchema">
+    <template #toolbar-extra="{ gridApi }">
+      <Button class="ml-2" @click="handleAdd">
+        新增code
+      </Button>
+      <Button class="ml-2" @click="handleCustom(gridApi)">
+        自定义code
+      </Button>
+    </template>
+  </QueryTable> -->
+
+  <!-- <QueryTable :schema="currentSchema">
+  <template #toolbar-tools="{ gridApi }">
+    <Button class="ml-2" @click="handleAdd">新增code</Button>
+    <Button class="ml-2" @click="handleCustom(gridApi)">自定义code</Button>
+  </template>
+</QueryTable> -->
+
+<!-- <QueryTable :schema="currentSchema">
   <template #toolbar-tools="{ gridApi }">
     <Button @click="handleAdd">新增code</Button>
     <Button @click="handleCustom(gridApi)">自定义code</Button>
   </template>
-</QueryTable>
-</template>   
+</QueryTable> -->
+<h1>当前实体: {{ entityName }}</h1>
+</template>

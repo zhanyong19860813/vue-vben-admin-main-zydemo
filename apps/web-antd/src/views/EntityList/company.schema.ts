@@ -5,6 +5,8 @@ export const companySchema: QueryTableSchema = {
 
   tableName: 't_base_company',
 
+    actionModule: '/src/views/EntityList/company.ts',
+
   toolbar: {
     actions: [
       {
