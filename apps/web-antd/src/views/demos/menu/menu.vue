@@ -7,7 +7,7 @@ import { Button, message } from 'ant-design-vue';
 import type { VbenFormProps } from '#/adapter/form';
 import { requestClient } from '#/api/request';
 
- import FormModalDemo from './form-modal-demo.vue';
+import FormModalDemo from './form-modal-demo.vue';
 import { ref } from 'vue';
 
 import axios from 'axios';
@@ -114,7 +114,7 @@ const gridOptions: VxeGridProps<RowType> = {
 
   ],
 
- 
+
 
   pagerConfig: {
     enabled: true,
@@ -200,9 +200,54 @@ function openFormModal() {
   // 传递初始表单值  判断新增还是编辑
   const isEdit = false; // 假设是新增
   formModalApi
+  // .setData({
+  //   // 表单值
+  //   values: { field1: 'abc', field2: '123' },
+  // })
+  // .open();
+
+  formModalApi
     .setData({
-      // 表单值
-      values: { field1: 'abc', field2: '123' },
+      mode: 'create',
+      values: {},
+    })
+    .open();
+}
+// 打开表单弹窗 - 编辑
+function openFormModalUpdate() {
+
+  // // 传递初始表单值  判断新增还是编辑
+  // const isEdit = true; // 假设是编辑
+  // //note: 这里可以根据选中行的数据来设置表单初始值
+  //  const grid = gridApi.grid;
+  //   const selectedRows = grid?.getCheckboxRecords();
+  //   if (!selectedRows?.length) {
+  //     message.warning('请先选择一行进行编辑');
+  //     return;
+  //   }
+  //   const rowData = selectedRows[0]; // 取第一行数据进行编辑
+
+  // formModalApi
+  //   .setData({
+  //     // 表单值
+  //     values: rowData,
+  //   })
+  //   .open();
+
+  const grid = gridApi.grid;
+  const selectedRows = grid?.getCheckboxRecords();
+
+  if (!selectedRows?.length) {
+    message.warning('请先选择一行进行编辑');
+    return;
+  }
+
+  const rowData = selectedRows[0];
+
+  formModalApi
+    .setData({
+      mode: 'edit',
+      values: rowData,
     })
     .open();
 }
@@ -283,7 +328,7 @@ const handleExport = async () => {
       {
         TableName: 't_base_company',
         columns: ['FID', 'Name', 'SimpleName', 'Location'],
-        QueryField:"FID as ID,Name as 姓名,SimpleName as 简称,Location as 地址",
+        QueryField: "FID as ID,Name as 姓名,SimpleName as 简称,Location as 地址",
         SimpleWhere: currentQuery.value, // 当前查询条件
         SortBy: 'Name',
         SortOrder: 'asc',
@@ -342,6 +387,9 @@ const handleExport = async () => {
       <template #toolbar-tools>
         <Button class="mr-2" type="primary" @click="openFormModal">
           新增
+        </Button>
+        <Button class="mr-2" type="primary" @click="openFormModalUpdate">
+          修改
         </Button>
         <Button class="mr-2" type="primary" danger @click="handleDelete">
           删除

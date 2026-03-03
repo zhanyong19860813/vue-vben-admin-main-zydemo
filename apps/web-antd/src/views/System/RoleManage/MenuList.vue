@@ -6,7 +6,8 @@ import { requestClient } from '#/api/request';
 import { useVbenModal } from '@vben/common-ui';
 
 import formModelAddMenu from './form-model-AddMenu.vue';
-
+import formModelAddButton from './form-modal-AddButton.vue';
+ 
 // ================= props =================
 const props = defineProps<{
   currentRoleId?: string;
@@ -20,8 +21,10 @@ const [MenuGrid, gridMenuApi] = useVbenVxeGrid({
       { type: 'seq', width: 50 },
       { field: 'id', title: 'ID' },
       { field: 'entity_name', title: '菜单名' },
+        { field: 'menu_id', title: '菜单id' },
       { field: 'meta', title: 'meta' },
       { field: 'url', title: '路径' },
+       { field: 'component', title: '组件' },
       { field: 'bar_items', title: '按钮' },
     ],
     pagerConfig: {
@@ -84,6 +87,11 @@ const [FormMenuModal, formMenuModalApi] = useVbenModal({
   connectedComponent: formModelAddMenu,
 });
 
+//按钮弹窗
+const [FormButtonModal, formButtonModalApi] = useVbenModal({
+  connectedComponent: formModelAddButton,
+});
+
 // 新增菜单
 function openAddMenu() {
   if (!props.currentRoleId) {
@@ -134,6 +142,39 @@ async function deleteMenu() {
   message.success('删除成功');
   gridMenuApi.query();
 }
+
+// 添加按钮
+function addButton() {
+      
+    const grid = gridMenuApi.grid;
+    if (!grid) {
+    message.error('表格未初始化');
+    return;
+    }
+
+    const rows = grid.getCheckboxRecords();
+    if (!rows.length) {
+    message.warning('请先选择要添加按钮的菜单');
+    return;
+    }
+
+    console.log('当前菜单ID:', rows[0].id);
+    console.log('当前角色ID:', props.currentRoleId);
+
+    console.log(' rows[0]:',  rows[0]);
+
+
+  formButtonModalApi
+    .setData({
+      values: {
+        menu_id: rows[0].menu_id,
+        role_id: props.currentRoleId,
+        menudata: rows[0],
+      },
+    })
+    .open();
+     
+}
 </script>
 
 <template>
@@ -142,13 +183,19 @@ async function deleteMenu() {
       <Button class="mr-1" type="primary" @click="openAddMenu">
         新增
       </Button>
+      &nbsp;
       <Button danger @click="deleteMenu">
         删除
+      </Button>
+      &nbsp;
+      <Button  default @click="addButton">
+        按钮
       </Button>
     </div>
 
     <MenuGrid />
 
     <FormMenuModal />
+    <FormButtonModal />
   </div>
 </template>
