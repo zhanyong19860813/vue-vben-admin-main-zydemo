@@ -2,6 +2,7 @@
 import { useVbenModal } from '@vben/common-ui';
 import { Button, Modal, message } from 'ant-design-vue';
 import { useVbenForm } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { ref, nextTick } from 'vue';
@@ -96,13 +97,15 @@ const dynamicColumns = ref<any[]>([
 
           if (!template) return;
           Object.assign(row, {
-            menu_action_id: template.id,//按钮ID 
+            menu_action_id: template.id,//按钮ID
             menu_id: template.menu_id,
             role_id: roleid.value,
             action_key: template.action_key,
             action: template.action,
             button_type: template.button_type,
             confirm_text: template.confirm_text,
+            form_code: template.form_code,
+            requires_selection: template.requires_selection,
             status: template.status,
             sort: template.sort,
           });
@@ -115,6 +118,19 @@ const dynamicColumns = ref<any[]>([
   { field: 'button_type', title: '类型', editRender: { name: 'input' } },
   { field: 'action', title: '方法名', editRender: { name: 'input' } },
   { field: 'confirm_text', title: '确认提示', editRender: { name: 'input' } },
+  { field: 'form_code', title: '表单编码', width: 120, editRender: { name: 'input' } },
+  {
+    field: 'requires_selection',
+    title: '需勾选行',
+    width: 90,
+    editRender: {
+      name: 'select',
+      options: [
+        { label: '否', value: 0 },
+        { label: '是', value: 1 },
+      ],
+    },
+  },
   { field: 'sort', title: '排序', editRender: { name: 'input' } },
   { field: 'status', title: '状态', editRender: { name: 'input' } },
 ]);
@@ -126,7 +142,7 @@ async function loadButtonTemplates(menuId: string) {
     return;
   }
   const res = await requestClient.post<any>(
-    'http://localhost:5155/api/DynamicQueryBeta/queryforvben',
+    backendApi('DynamicQueryBeta/queryforvben'),
     {
       TableName: 'vben_menu_actions',
       Page: 1,
@@ -186,7 +202,7 @@ const gridnewOptions: VxeGridProps<any> = {
         if (!targetId) return { items: [], total: 0 };
 
         const res = await requestClient.post<any>(
-          'http://127.0.0.1:5155/api/DynamicQueryBeta/queryforvben',
+          backendApi('DynamicQueryBeta/queryforvben'),
           {
             TableName: "vben_v_role_menu_actions",
             Page: page.currentPage,
@@ -293,37 +309,44 @@ async function onSubmit(values: Record<string, any>) {
 
 
   const savedata = btnSaveData.map((item) => {
-    // 直接解构出你需要的字段，rest 包含其他所有字段（包括 _original）
     const { role_id, menu_action_id, menu_id, status } = item;
-
-    // 返回一个只包含这 4 个字段的新对象
-    return {
-      role_id,
-      menu_action_id,
-      menu_id,
-      status
-    };
+    return { role_id, menu_action_id, menu_id, status };
   });
-  //console.log('🔍 待保存数据:', savedata);
+
+  // 收集 vben_menu_actions 的 form_code、requires_selection 更新（按 menu_action_id）
+  const menuActionUpdates = btnSaveData
+    .filter((item) => item.menu_action_id && (item.form_code !== undefined || item.requires_selection !== undefined))
+    .map((item) => ({
+      id: item.menu_action_id,
+      form_code: item.form_code ?? null,
+      requires_selection: item.requires_selection ? 1 : 0,
+    }));
 
   const btnDeleteRows = removeRecords.map((item) => ({ id: item.id || item.id }));
 
-  console.log('🔍 待删除数据:', btnDeleteRows);
   if (btnSaveData.length === 0 && btnDeleteRows.length === 0) {
     message.info('无数据变更');
     return;
   }
 
-  await requestClient.post<any>('http://localhost:5155/api/DataSave/datasave-multi', {
-    tables: [
-      {
-        tableName: 'vben_t_sys_role_menu_actions',
-        primaryKey: 'id', // 后端表的主键名
-        data: savedata,
-        deleteRows: btnDeleteRows,
-      },
-    ],
-  });
+  const tables: any[] = [
+    {
+      tableName: 'vben_t_sys_role_menu_actions',
+      primaryKey: 'id',
+      data: savedata,
+      deleteRows: btnDeleteRows,
+    },
+  ];
+  if (menuActionUpdates.length > 0) {
+    tables.push({
+      tableName: 'vben_menu_actions',
+      primaryKey: 'id',
+      data: menuActionUpdates,
+      deleteRows: [],
+    });
+  }
+
+  await requestClient.post<any>(backendApi('DataSave/datasave-multi'), { tables });
 
   message.success('保存成功');
   modalApi.close();

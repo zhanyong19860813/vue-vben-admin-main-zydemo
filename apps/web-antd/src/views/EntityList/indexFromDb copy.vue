@@ -6,6 +6,8 @@ import { companySchema } from './company.schema';
 import { employeeSchema } from './employee.schema';
 import { useRoute } from 'vue-router';
 import { requestClient } from '#/api/request';
+ 
+
 // 按钮事件
 const handleAdd = () => {
   message.success('新增按钮点击');
@@ -30,6 +32,7 @@ const isLoading = ref(false);
 // 可选：添加错误状态
 const error = ref(null);
 
+
 // 3. 监听 entityName 变化，请求后端接口
 watch(
   () => entityName.value,
@@ -51,10 +54,10 @@ watch(
           params: { entityName: newEntityName }
         }
       );
-      console.log('请求到的 schema:', res);
+      console.log('1请求到的 schema:', res);
       remoteSchema.value = res;
     } catch (err) {
-      console.error('请求 schema 失败:', err);
+      console.error('2请求 schema 失败:', err);
       //error.value = err;
       remoteSchema.value = null; // 请求失败时清空
       message.error(`获取 schema 失败`);
@@ -70,10 +73,14 @@ watch(
 const currentSchema = computed(() => {
   // 如果有远程 schema，直接返回
   if (remoteSchema.value) {
+    console.log('3使用远程 schema:', remoteSchema.value);
+     
+    console.log('4使用远程 schema.grid:', remoteSchema.grid);
+
     return remoteSchema.value;
   }
   // 否则根据实体名称返回本地兜底 schema
-  console.log('使用本地兜底 schema，实体名称:', entityName.value);
+  console.log('5使用本地兜底 schema，实体名称:', entityName.value);
   switch (entityName.value) {
     case 'company':
       return companySchema;
@@ -85,24 +92,18 @@ const currentSchema = computed(() => {
       return employeeSchema; // 默认使用 employeeSchema
   }
 });
-
-// 调试日志
-console.log('当前实体 route.meta:', route.meta);
-console.log('当前实体参数:', route.meta.query?.entityname);
 </script>
 <template>
-  <!-- 可以添加加载状态提示 -->
  <div v-if="isLoading" style="padding: 20px; text-align: center;">
     正在加载 Schema...
   </div>
   <div v-else-if="error" style="padding: 20px; text-align: center; color: #ff4d4f;">
     加载失败：{{ error.message || '未知错误' }}
-  </div> 
-  <QueryTable  v-else  :schema="currentSchema">
-    <template #toolbar-tools="{ gridApi }">
+  </div>  
+    <QueryTable     :schema="currentSchema">
+     <template #toolbar-tools="{ gridApi }">
       <Button @click="handleAdd">新增 code</Button>
       <Button @click="handleCustom(gridApi)">自定义 code</Button>
-    </template>
+    </template>  
   </QueryTable> 
-  <h1>当前实体: {{ entityName }}</h1>
 </template>

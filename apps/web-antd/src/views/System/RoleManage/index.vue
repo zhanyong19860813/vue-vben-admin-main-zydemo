@@ -29,13 +29,24 @@ function handleRoleChange(id: string, name: string) {
 </script>
 
 <template>
-  <ColPage v-bind="props">
+  <ColPage v-bind="props" auto-content-height>
     <template #left>
       <RoleTree @change="handleRoleChange" />
     </template>
 
-    <Card class="ml-1" title="用户信息">
-      <Tabs>
+    <div class="ml-1 flex h-full flex-col">
+      <Card
+        class="h-full flex flex-1 flex-col !border-border"
+        :body-style="{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+        }"
+      >
+        <Tabs
+          class="flex flex-1 flex-col [&_.ant-tabs-content]:flex-1 [&_.ant-tabs-tabpane]:h-full"
+        >
         <Tabs.TabPane key="user" tab="用户列表">
           <UserList
             :currentRoleId="currentRoleId"
@@ -43,10 +54,11 @@ function handleRoleChange(id: string, name: string) {
           />
         </Tabs.TabPane>
 
-        <Tabs.TabPane key="menu" tab="菜单权限"   force-render>
+        <Tabs.TabPane key="menu" tab="菜单权限" force-render>
           <MenuList :currentRoleId="currentRoleId" />
         </Tabs.TabPane>
       </Tabs>
     </Card>
+    </div>
   </ColPage>
 </template>

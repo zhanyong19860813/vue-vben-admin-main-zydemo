@@ -5,6 +5,7 @@ import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { Page } from '@vben/common-ui';
 import { Button, message } from 'ant-design-vue';
 import type { VbenFormProps } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 
 import FormModalDemo from './form-modal-adduser.vue';
@@ -73,7 +74,7 @@ async function getData(page, sort, formValues) {
 
 
     const res = await requestClient.post<ApiResponse>(
-      'http://127.0.0.1:5155/api/DynamicQueryBeta/queryforvben',
+      backendApi('DynamicQueryBeta/queryforvben'),
       {
         TableName: "vben_t_sys_user",
         Page: page.currentPage,
@@ -219,7 +220,7 @@ const handleDelete = async () => {
 
 
     const res = await requestClient.post<ApiResponse>(
-      'http://localhost:5155/api/DataBatchDelete/BatchDelete',
+      backendApi('DataBatchDelete/BatchDelete'),
       [
         {
           tablename: "t_base_company",
@@ -273,7 +274,7 @@ const handleExport = async () => {
 
     // ② axios POST 下载 Excel
     const res = await axios.post(
-      'http://localhost:5155/api/DynamicQueryBeta/ExportExcel',
+      backendApi('DynamicQueryBeta/ExportExcel'),
       {
         TableName: 't_base_company',
         columns: ['FID', 'Name', 'SimpleName', 'Location'],

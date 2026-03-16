@@ -2,6 +2,7 @@
 import { watch } from 'vue';
 import { Button, message } from 'ant-design-vue';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { useVbenModal } from '@vben/common-ui';
 
@@ -29,7 +30,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
             return { records: [], total: 0 };
           }
           return requestClient.get(
-            'http://localhost:5155/api/DynamicQueryBeta/query',
+            backendApi('DynamicQueryBeta/query'),
             {
               params: {
                 tableName: 'v_vben_t_sys_user_role',

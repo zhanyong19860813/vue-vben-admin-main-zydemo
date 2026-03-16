@@ -182,8 +182,8 @@ defineExpose({ toggleOpenState, open, close });
 <template>
   <VbenPopover
     v-model:open="visible"
-    :content-props="{ align: 'end', alignOffset: -11, sideOffset: 8 }"
-    content-class="p-0 pt-3 w-full"
+    :content-props="{ align: 'center', sideOffset: 12 }"
+    content-class="p-0 pt-3 min-w-[520px] w-[520px] max-w-[95vw]"
     trigger-class="w-full"
   >
     <template #trigger>
@@ -246,7 +246,7 @@ defineExpose({ toggleOpenState, open, close });
     </div>
 
     <template v-if="paginationList.length > 0">
-      <div class="grid max-h-[360px] w-full grid-cols-6 justify-items-center">
+      <div class="grid max-h-[440px] w-full grid-cols-8 justify-items-center gap-1 overflow-y-auto">
         <VbenIconButton
           v-for="(item, index) in paginationList"
           :key="index"

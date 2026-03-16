@@ -4,6 +4,7 @@ import { reactive, ref ,onMounted } from 'vue';
 import { ColPage } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 //import { BasicTree } from '#/components/Tree';
 
@@ -45,7 +46,7 @@ onMounted(async () => {
 
   try {
 
-    const res = await requestClient.get('http://localhost:5155/api/QueryTreeData/tree');
+    const res = await requestClient.get(backendApi('QueryTreeData/tree'));
      roleTreeDatas.value = res;
 
     // 默认展开第一层
@@ -90,7 +91,7 @@ const gridOptions: VxeGridProps<RowType> = {
           console.log("当前角色ID:",currentRoleId.value);
 
         const res = await requestClient.get(
-        'http://localhost:5155/api/DynamicQueryBeta/query',
+        backendApi('DynamicQueryBeta/query'),
         {
             params: 
             {
@@ -159,7 +160,7 @@ const gridMenuOptions: VxeGridProps<MenuRowType> = {
 
         
         const res = await requestClient.get(
-        'http://localhost:5155/api/DynamicQueryBeta/query',
+        backendApi('DynamicQueryBeta/query'),
         {
             params: 
             {

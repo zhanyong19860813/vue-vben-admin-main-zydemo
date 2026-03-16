@@ -1,9 +1,13 @@
 import type { QueryTableSchema } from '#/components/QueryTable/types';
+import { backendApi } from '#/api/constants';
 
 export const companySchema: QueryTableSchema = {
   title: '公司列表1',
 
   tableName: 't_base_company',
+
+  saveEntityName: 't_base_company',
+  primaryKey: 'FID',
 
     actionModule: '/src/views/EntityList/company.ts',
 
@@ -11,20 +15,14 @@ export const companySchema: QueryTableSchema = {
     actions: [
       {
         key: 'add',
-        label: '新增schema',
+        label: '新增',
         type: 'primary',
         action: 'add',
       },
       {
         key: 'reload',
-        label: '刷新schema',
+        label: '刷新',
         action: 'reload',
-      },
-      {
-        key: 'delete',
-        label: '删除schema',
-        action: 'deleteSelected',
-        confirm: '确定删除选中数据？',
       },
     ],
   },
@@ -62,8 +60,8 @@ export const companySchema: QueryTableSchema = {
   },
 
   api: {
-    query: 'http://127.0.0.1:5155/api/DynamicQueryBeta/queryforvben',
-    delete: 'http://localhost:5155/api/DataBatchDelete/BatchDelete',
-    export: 'http://127.0.0.1:5155/api/DynamicQueryBeta/ExportExcel',
+    query: backendApi('DynamicQueryBeta/queryforvben'),
+    delete: backendApi('DataBatchDelete/BatchDelete'),
+    export: backendApi('DynamicQueryBeta/ExportExcel'),
   },
 };

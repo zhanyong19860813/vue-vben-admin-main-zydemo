@@ -4,6 +4,7 @@ import { useVbenModal } from '@vben/common-ui';
 import { message } from 'ant-design-vue';
 
 import { useVbenForm } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 
 
@@ -97,7 +98,7 @@ function onSubmit(values: Record<string, any>) {
 
   console.log('提交的表单值：', values);
 
- requestClient.post<ApiResponse>('http://localhost:5155/api/DataSave/datasave',
+ requestClient.post<ApiResponse>(backendApi('DataSave/datasave'),
     {
       tableName: "t_base_company",
        data:[values] ,

@@ -4,6 +4,7 @@ import { useVbenModal } from '@vben/common-ui';
 import { message } from 'ant-design-vue';
 
 import { useVbenForm } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { reactive, ref, onMounted } from 'vue';
 
@@ -25,7 +26,7 @@ const fetching = ref(false);
     console.log('远程搜索关键词：', currentKeyword);
 
     const res =  await requestClient.get(
-          'http://localhost:5155/api/DynamicQueryBeta/query',
+          backendApi('DynamicQueryBeta/query'),
           {
             params:
             {
@@ -193,7 +194,7 @@ function onSubmit(values: Record<string, any>) {
 
   console.log('提交的表单值：', values);
 
- requestClient.post<ApiResponse>('http://localhost:5155/api/DataSave/datasave',
+ requestClient.post<ApiResponse>(backendApi('DataSave/datasave'),
     {
       tableName: "vben_t_sys_user",
        data:[values] ,

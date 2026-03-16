@@ -2,6 +2,7 @@
 import { useVbenModal } from '@vben/common-ui';
 import { Button, Modal, message } from 'ant-design-vue';
 import { useVbenForm } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { ref } from 'vue';
@@ -13,10 +14,69 @@ const currentQueryMenuId = ref<string>('');
 
 let menuid = crypto.randomUUID();
 
-// ... (Form 定义保持不变) ...
+// 获取下拉框数据
+const parentOptions = ref<{ label: string, value: string }[]>([]);
+
+const loadParentOptions = async () => {
+  // const res = await requestClient.post<any>(
+  //   'http://127.0.0.1:5155/api/DataQuery',
+  //   { TableName: "vben_menus_new" }
+  // );
+
+  const res = await requestClient.post<any>(
+      backendApi('DynamicQueryBeta/queryforvben'),
+      {
+        TableName: "vben_menus_new",
+        Page: 1,
+        PageSize: 50,
+        SortBy:  "Name",
+        SortOrder:   "asc",
+        SimpleWhere: {}
+      },
+      {
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+  
+  if (res && res.items) {
+    parentOptions.value = res.items.map((item: any) => ({
+      label: item.name,
+      value: item.id
+    }));
+  }
+};
+
 const [Form, formApi] = useVbenForm({
-  // ... 你的 form 配置 ...
   handleSubmit: onSubmit,
+  // 菜单名称 → meta.title；图标选择 → meta.icon
+  handleValuesChange: (values, changedFields) => {
+    if (changedFields?.includes('name')) {
+      let metaObj: Record<string, any> = {};
+      try {
+        const m = values?.meta;
+        metaObj = typeof m === 'string' ? JSON.parse(m) : m ? { ...m } : {};
+      } catch {
+        metaObj = {};
+      }
+      metaObj.title = values?.name != null ? String(values.name) : '';
+      formApi.setFieldValue('meta', JSON.stringify(metaObj));
+    }
+    if (changedFields?.includes('icon')) {
+      let metaObj: Record<string, any> = {};
+      try {
+        const m = values?.meta;
+        metaObj = typeof m === 'string' ? JSON.parse(m) : m ? { ...m } : {};
+      } catch {
+        metaObj = {};
+      }
+      if (values?.icon != null && String(values.icon).trim() !== '') {
+        metaObj.icon = String(values.icon).trim();
+      } else {
+        delete metaObj.icon;
+      }
+      formApi.setFieldValue('meta', JSON.stringify(metaObj));
+    }
+  },
   schema: [
     // ... schema ...
     {
@@ -27,11 +87,25 @@ const [Form, formApi] = useVbenForm({
       rules: 'required',
       defaultValue: menuid
     },
+
+    
+    {
+      component: 'Select',
+      componentProps: {
+        placeholder: '请选择父菜单',
+        options: parentOptions,
+        style: { minWidth: '320px' },
+        dropdownStyle: { minWidth: '320px' },
+      },
+      fieldName: 'parent_id',
+      label: '父菜单ID',
+      //rules: 'required',
+    },
     {
       component: 'Input',
-      componentProps: { placeholder: '请输入' },
-      fieldName: 'Name',
-      label: '菜单名',
+      componentProps: { placeholder: '请输入菜单名称' },
+      fieldName: 'name',
+      label: '菜单名称',
     },
     {
       component: 'Input',
@@ -46,6 +120,38 @@ const [Form, formApi] = useVbenForm({
       fieldName: 'component',
       label: '组件',
       rules: 'required',
+    },
+    {
+      component: 'Input',
+      componentProps: { placeholder: '请输入' },
+      fieldName: 'type',
+      label: '类型',
+      defaultValue: 'menu',
+      rules: 'required',
+    },
+       {
+      component: 'Input',
+      componentProps: { placeholder: '请输入' },
+      fieldName: 'status',
+      label: '状态',
+      defaultValue: '1',
+      rules: 'required',
+    },
+    {
+      component: 'InputNumber',
+      componentProps: { placeholder: '排序，数字越小越靠前' },
+      fieldName: 'sort',
+      label: '排序',
+      defaultValue: 0,
+    },
+    {
+      component: 'IconPicker',
+      componentProps: {
+        prefix: 'mdi',
+        placeholder: '可选，点击选择图标，将同步到 meta.icon',
+      },
+      fieldName: 'icon',
+      label: '图标',
     },
     {
       component: 'Input',
@@ -81,6 +187,19 @@ const gridnewOptions: VxeGridProps<any> = {
     { field: 'button_type', title: '类型', editRender: { name: 'input' } },
     { field: 'action', title: '方法名', editRender: { name: 'input' } },
     { field: 'confirm_text', title: '确认提示', editRender: { name: 'input' } },
+    { field: 'form_code', title: '表单编码', width: 120, editRender: { name: 'input' } },
+    {
+      field: 'requires_selection',
+      title: '需勾选行',
+      width: 90,
+      editRender: {
+        name: 'select',
+        options: [
+          { label: '否', value: 0 },
+          { label: '是', value: 1 },
+        ],
+      },
+    },
     { field: 'sort', title: '排序', editRender: { name: 'input' } },
     { field: 'status', title: '状态', editRender: { name: 'input' } },
   ],
@@ -112,7 +231,7 @@ const gridnewOptions: VxeGridProps<any> = {
         console.log('🚀 Proxy 正在查询菜单 ID:', targetId);
 
         const res = await requestClient.post<any>(
-          'http://127.0.0.1:5155/api/DynamicQueryBeta/queryforvben',
+          backendApi('DynamicQueryBeta/queryforvben'),
           {
             TableName: "vben_menu_actions",
             Page: page.currentPage,
@@ -182,7 +301,19 @@ const [ModalF, modalApi] = useVbenModal({
     if (mode === 'edit') {
       console.log('当前是编辑模式 ID:', values.id);
       menuid = values.id;
-      formApi.setValues(values);
+      let icon = '';
+      try {
+        const metaObj = typeof values.meta === 'string' ? JSON.parse(values.meta) : values.meta;
+        icon = metaObj?.icon ?? '';
+      } catch {
+        // ignore
+      }
+      const formValues = {
+        ...values,
+        name: values.name ?? values.Name ?? '',
+        icon,
+      };
+      formApi.setValues(formValues);
 
       // ⭐⭐⭐ 关键步骤 ⭐⭐⭐
       // 1. 将父组件传来的 ID 赋值给响应式变量
@@ -233,37 +364,95 @@ async function onSubmit(values: Record<string, any>) {
   const btnSaveData = [...insertRecords, ...finalUpdates];
   const btnDeleteRows = removeRecords.map(item => ({ id: item.id }));
 
-  if (btnSaveData.length === 0 && btnDeleteRows.length === 0) {
-    message.info('无数据变更');
-    return;
+  // 将「菜单名称」同步到 meta.title，「图标」同步到 meta.icon（icon 不落库，只存在 meta 里）
+  let metaObj: Record<string, any> = {};
+  try {
+    metaObj = typeof values.meta === 'string' ? JSON.parse(values.meta) : { ...values.meta };
+  } catch {
+    metaObj = {};
   }
+  if (values.name != null && String(values.name).trim() !== '') {
+    metaObj.title = String(values.name).trim();
+  }
+  if (values.icon != null && String(values.icon).trim() !== '') {
+    metaObj.icon = String(values.icon).trim();
+  } else if (metaObj.icon !== undefined) {
+    delete metaObj.icon;
+  }
+  // 提交时去掉 icon 字段，避免后端报「列名 icon 无效」（表里没有 icon 列）
+  const { icon: _icon, ...restValues } = values;
+  const saveValues = { ...restValues, meta: JSON.stringify(metaObj) };
+
+  let tables = [{ tableName: "vben_menus_new", primaryKey: "id", data: [saveValues], deleteRows: [] },];
+  if (btnSaveData.length > 0) {
+    tables.push({ tableName: "vben_menu_actions", primaryKey: "id", data: btnSaveData, deleteRows: btnDeleteRows });
+  }
+ 
 
   await requestClient.post<any>(
-    'http://localhost:5155/api/DataSave/datasave-multi',
+    backendApi('DataSave/datasave-multi'),
     {
-      tables: [
-        { tableName: "vben_menus_new", primaryKey: "id", data: [values], deleteRows: [] },
-        { tableName: "vben_menu_actions", primaryKey: "id", data: btnSaveData, deleteRows: btnDeleteRows }
-      ]
+      tables:  tables
     }
   );
+  // await requestClient.post<any>(
+  //   backendApi('DataSave/datasave-multi'),
+  //   {
+  //     tables: [
+  //       { tableName: "vben_menus_new", primaryKey: "id", data: [values], deleteRows: [] },
+  //       { tableName: "vben_menu_actions", primaryKey: "id", data: btnSaveData, deleteRows: btnDeleteRows }
+  //     ]
+  //   }
+  // );
 
   message.success('保存成功');
   modalApi.close();
 }
 
 // ... (handleAddRow, handleDeleteRows 保持不变) ...
+// 公共按钮模板（所有菜单可选，不需要自定义）
+const BUILTIN_BUTTONS = [
+  { action_key: 'deleteSelected', label: '删除', action: 'deleteSelected', button_type: 'default', confirm_text: '确定删除选中数据？', sort: 1 },
+  { action_key: 'export', label: '导出', action: 'export', button_type: 'default', sort: 2 },
+  { action_key: 'reload', label: '刷新', action: 'reload', button_type: 'primary', sort: 3 },
+];
+
+const handleAddBuiltinButton = async (builtin: typeof BUILTIN_BUTTONS[0]) => {
+  const exists = gridApi.grid.getData().some((r: any) => r.action_key === builtin.action_key);
+  if (exists) {
+    message.warning(`「${builtin.label}」已添加`);
+    return;
+  }
+  const newRow = {
+    id: crypto.randomUUID(),
+    menu_id: menuid,
+    action_key: builtin.action_key,
+    label: builtin.label,
+    button_type: builtin.button_type,
+    action: builtin.action,
+    confirm_text: builtin.confirm_text || '',
+    form_code: '',
+    requires_selection: 0,
+    sort: builtin.sort,
+    status: 1,
+  };
+  await gridApi.grid.insert(newRow);
+  message.success(`已添加「${builtin.label}」`);
+};
+
 const handleAddRow = async () => {
   const newRow: any = {
     id: crypto.randomUUID(),
     label: '按钮名称',
-    button_type: '按钮类型',
+    button_type: 'default',
     action: '方法名称',
-    menu_id: menuid, // 使用当前的 menuid
-    sort: 1,
+    menu_id: menuid,
+    sort: 99,
     confirm_text: '确认要执行吗？',
     action_key: '按钮code',
-    status: 1
+    form_code: '',
+    requires_selection: 0,
+    status: 1,
   };
   const { row } = await gridApi.grid.insert(newRow);
   await gridApi.grid.setEditRow(row);
@@ -286,6 +475,9 @@ const handleDeleteRows = async () => {
     },
   });
 };
+
+// 加载下拉框数据
+loadParentOptions();
 </script>
 <style lang="less">
 .custom-modal {
@@ -300,8 +492,13 @@ const handleDeleteRows = async () => {
     <Form />
     <Grid table-title="按钮列表">
       <template #toolbar-tools>
-        <Button class="mr-2" type="primary" @click="handleAddRow()">新增</Button>
-        <Button class="mr-2" type="primary" danger @click="handleDeleteRows()">删除</Button>
+        <span class="mr-2 text-xs text-muted-foreground">公共按钮：</span>
+        <Button v-for="b in BUILTIN_BUTTONS" :key="b.action_key" size="small" class="mr-2" @click="handleAddBuiltinButton(b)">
+          {{ b.label }}
+        </Button>
+        <span class="mx-2 text-muted-foreground">|</span>
+        <Button class="mr-2" type="primary" @click="handleAddRow()">自定义按钮</Button>
+        <Button class="mr-2" type="primary" danger @click="handleDeleteRows()">删除选中</Button>
       </template>
     </Grid>
   </ModalF>

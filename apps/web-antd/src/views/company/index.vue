@@ -19,7 +19,6 @@ const handleCustom = (gridApi: any) => {
       <Button class="ml-2" @click="handleAdd">
         新增
       </Button>
-
       <Button class="ml-2" @click="handleCustom(gridApi)">
         自定义操作
       </Button>

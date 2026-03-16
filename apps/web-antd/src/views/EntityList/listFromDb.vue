@@ -1,115 +1,286 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
-import { Button, message } from 'ant-design-vue';
-import QueryTable from '#/components/QueryTable/index.vue';
-import { companySchema } from './company.schema';
-import { employeeSchema } from './employee.schema';
-import { useRoute } from 'vue-router';
-import { requestClient } from '#/api/request';
- 
+import { ref, computed, onMounted } from 'vue'
+import { useRoute, onBeforeRouteUpdate } from 'vue-router'
+import QueryTable from '#/components/QueryTable/index.vue'
+import { companySchema } from './company.schema'
+import { employeeSchema } from './employee.schema'
+import { backendApi } from '#/api/constants'
+import { requestClient } from '#/api/request'
+import { message } from 'ant-design-vue'
 
-// 按钮事件
-const handleAdd = () => {
-  message.success('新增按钮点击');
-};
-const handleCustom = (gridApi: any) => {
-  const rows = gridApi.grid?.getCheckboxRecords();
-  message.success(`选中 ${rows.length} 条`);
-};
-
-// 路由相关
-const route = useRoute();
-
-// 1. 计算属性获取实体名称
-const entityName = computed(() => {
-  return route.meta.query?.entityname as string;
-});
-
-// 1. 计算属性获取菜单 ID（如果需要）
-const menuId = computed(() => {
-  return route.meta.query?.menuid as string;
-});
+//2026-03-09 begin：重构后的版本， 
+import { Button, } from 'ant-design-vue';
+import { h } from 'vue'
+import { useVbenModal } from '@vben/common-ui'
+import { useVbenForm, z } from '#/adapter/form'
+import { getFormDemoLayoutData } from '#/schema/formschema/entity_list.schema'
 
 
-// 2. 定义响应式变量存储后端返回的 schema
-const remoteSchema = ref(null);
-// 可选：添加加载状态，方便UI显示
-const isLoading = ref(false);
-// 可选：添加错误状态
-const error = ref(null);
 
 
-// 3. 监听 entityName 变化，请求后端接口
-watch(
-  () => entityName.value,
-  async (newEntityName) => {
-    // 如果没有实体名称，清空远程 schema
-    if (!newEntityName) {
-      remoteSchema.value = null;
+// 路由
+const route = useRoute()
+
+// 响应式状态
+const schema = ref<any>(null)
+const isLoading = ref(false)
+
+//当前列表在 数据库 vben_entity_list 的id 
+const currentEntityListId = ref<string>('');
+
+
+  const currentSchema = ref<any[]>([]); // 当前表格的列定义
+
+// 计算 entityName / menuId
+const entityName = computed(() => route.meta.query?.entityname as string)
+const menuId = computed(() => route.meta.query?.menuid as string)
+
+// 系统操作日志本地 schema（当 VbenSchema/GetSchema 未配置该实体时兜底）
+const operationLogSchema = {
+  title: '系统操作日志',
+  tableName: 'vben_sys_operation_log',
+  primaryKey: 'id',
+  toolbar: { actions: [{ key: 'reload', label: '刷新', action: 'reload' }] },
+  form: { collapsed: true, submitOnChange: true, schema: [
+    { component: 'Input', fieldName: 'user_name', label: '用户' },
+    { component: 'Input', fieldName: 'action_type', label: '操作类型' },
+  ] },
+  grid: {
+    columns: [
+      { type: 'checkbox', width: 80 },
+      { type: 'seq', width: 60 },
+      { field: 'id', title: 'ID', minWidth: 260 },
+      { field: 'user_name', title: '用户', width: 100 },
+      { field: 'action_type', title: '操作类型', width: 100 },
+      { field: 'target', title: '目标', width: 120 },
+      { field: 'description', title: '描述', minWidth: 150 },
+      { field: 'created_at', title: '时间', width: 160 },
+    ],
+    pagerConfig: { enabled: true, pageSize: 20 },
+    sortConfig: { remote: true, defaultSort: { field: 'created_at', order: 'desc' } },
+  },
+  api: {
+    query: backendApi('DynamicQueryBeta/queryforvben'),
+    delete: backendApi('DataBatchDelete/BatchDelete'),
+    export: backendApi('DynamicQueryBeta/ExportExcel'),
+  },
+}
+
+// 本地兜底函数（当后端 VbenSchema/GetSchema 返回 404 时使用）
+function getLocalSchema(name: string) {
+  switch (name) {
+    case 'company':
+      return companySchema
+    case 'user':
+      return companySchema
+    case 'car':
+      return employeeSchema
+    case 'operationLog':
+      return operationLogSchema
+    default:
+      return employeeSchema
+  }
+}
+
+// 加载 schema（核心函数）
+async function loadSchema() {
+  if (!entityName.value) {
+    schema.value = null
+    return
+  }
+
+  isLoading.value = true
+  schema.value = null   // 关键：切换菜单时先清空，避免旧数据闪现
+
+  try {
+    console.log('正在请求 schema，实体名称:', entityName.value)
+
+    const res = await requestClient.get(
+      backendApi('VbenSchema/GetSchema'),
+      {
+        params: {
+          entityName: entityName.value,
+          menuId: menuId.value
+        }
+      }
+    )
+
+    console.log('请求到的 schema:', res)
+
+    schema.value = res
+     currentEntityListId.value = res.entityListId || '';
+    //  console.log("schema.entityListId",schema.value.entityListId);
+
+  } catch (err) {
+    console.error('请求 schema 失败:', err)
+    message.error('获取 schema 失败，使用本地兜底')
+    schema.value = getLocalSchema(entityName.value)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// 首次进入页面
+onMounted(() => {
+  loadSchema()
+})
+
+// 路由变化时（多个菜单复用组件的关键）
+onBeforeRouteUpdate(() => {
+  loadSchema()
+})
+
+
+//弹出框begin
+
+// 模态框相关代码 begin
+const formLayout = ref<any[]>([])
+
+const showModal = ref(false)
+
+const cols = 2
+
+const [FormOnlyModal, formOnlyModalApi] = useVbenModal({
+  onOpenChange(isOpen) {
+    if (!isOpen) return
+
+    showModal.value = true
+    const data = formOnlyModalApi.getData()
+    formLayout.value = data.layout || []
+
+    formLayout.value.forEach((item) => {
+      if (item.type === 'form') {
+        formApi.setState({
+          schema: item.schema,
+          //wrapperClass: 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3',
+          wrapperClass: `grid-cols-${cols}`,
+          layout: 'horizontal',
+          labelAlign: 'right',
+          labelWidth: 100
+        })
+      }
+    })
+  },
+  // ⭐ 这里就是提交按钮
+  async onConfirm() {
+
+    //数据校验
+    //const values = await formApi.validate()
+
+    const formsvalues = await formApi.getValues()
+
+    // const saveEntityName = currentSchema.value.saveEntityName;
+    // const primaryKey = currentSchema.value.primaryKey || 'id';
+
+         const saveEntityName = schema.value.saveEntityName;
+    const primaryKey = schema.value.primaryKey || 'id';
+
+
+    if (saveEntityName == undefined || saveEntityName == null || saveEntityName == '') {
+      message.success(`保存实体：${saveEntityName}`);
       return;
     }
-    // 开始请求，设置加载状态
-    isLoading.value = true;
-    error.value = null;
-    
-    try {
-      console.log('正在请求 schema，实体名称:', newEntityName);
 
-      //console.log('菜单id：', { menuid: newEntityName });
-      const res = await requestClient.get(
-        'http://localhost:5155/api/VbenSchema/GetSchema',
-        {
-          params: { entityName: newEntityName, menuId: menuId.value }
-        }
-      );
-      console.log('请求到的 schema:', res);
-      remoteSchema.value = res;
-    } catch (err) {
-      console.error('请求 schema 失败:', err);
-      //error.value = err;
-      remoteSchema.value = null; // 请求失败时清空
-      message.error(`获取 schema 失败`);
-    } finally {
-      isLoading.value = false;
-    }
+    //通用保存方法
+    let tables = [{ tableName: saveEntityName, primaryKey: primaryKey, data: [formsvalues], deleteRows: [] },];
+    // if (btnSaveData.length > 0) {
+    //   tables.push({ tableName: "vben_menu_actions", primaryKey: "id", data: btnSaveData, deleteRows: btnDeleteRows });
+    // }
+
+    //console.log('保存数据 tables', tables)
+    await requestClient.post<any>(
+      backendApi('DataSave/datasave-multi'),
+      {
+        tables: tables
+      }
+    );
+
+
+    //saveEntityName = currentSchema.value.saveEntityName || currentSchema.value.entityName || '未知实体'
+    //message.success(  JSON.stringify(formsvalues))
+    message.success('表单提交成功')
+    formOnlyModalApi.close()
+    gridApi.grid.reload() // 刷新表格数据
+    //message.success('当前保存实体：' + entityName.value)
+
+    //formOnlyModalApi.close()
   },
-  { 
-    immediate: true // 立即执行一次，获取初始数据
+  onCancel() {
+    console.log('点击取消')
+    formOnlyModalApi.close()
   }
-);
-// 4. 最终的 schema：优先使用远程的，否则用本地兜底
-const currentSchema = computed(() => {
-  // 如果有远程 schema，直接返回
-  if (remoteSchema.value) {
-    console.log('使用远程 schema:', remoteSchema.value);
-    return remoteSchema.value;
+})
+
+const [Form, formApi] = useVbenForm({
+  showDefaultActions: false,
+  schema: []
+})
+
+
+const componentMap = {
+  form: () => h(Form),
+
+  button: (item: any) =>
+    h(
+      Button,
+      {
+        type: item.type || 'primary',
+        onClick: async () => {
+          if (item.action === 'submitForm') {
+            const values = await formApi.validate()
+            console.log('表单提交数据', values)
+            message.success('表单提交成功')
+          }
+
+          if (item.action === 'custom') {
+            item.onClick?.()
+          }
+        },
+        style: item.style || {}
+      },
+      () => item.label || '按钮'
+    )
+}
+
+/// 打开表单模态框  新增或者编辑
+async function openFormOnlyModal(type: 'add' | 'edit', gridApi: any) {
+  showModal.value = true
+  let selectedRows = gridApi.grid.getCheckboxRecords();
+
+  let formValue = type === 'edit' ? selectedRows[0] : {};
+
+  if (type === 'edit' && !selectedRows.length) {
+    message.warning('请至少选择一条数据进行编辑')
+    return
   }
-  // 否则根据实体名称返回本地兜底 schema
-  console.log('使用本地兜底 schema，实体名称:', entityName.value);
-  switch (entityName.value) {
-    case 'company':
-      return companySchema;
-    case 'user':
-      return companySchema; // user 也使用 companySchema
-    case 'car':
-      return employeeSchema;
-    default:
-      return employeeSchema; // 默认使用 employeeSchema
-  }
-});
+  console.log('选中数据', selectedRows)
+  const layout = await getFormDemoLayoutData(formValue, currentEntityListId.value || '');
+
+
+   console.log('获取到的布局数据', layout)  
+  formOnlyModalApi.setData({
+    // layout: formDemoLayout
+    layout: layout
+  })
+
+  formOnlyModalApi.open()
+}
 </script>
-<template> 
-  <QueryTable
-    :schema="currentSchema"
-    :loading="isLoading"
-    @add="handleAdd"
-    @custom="handleCustom"
-  >
+<template>
 
-   <template #toolbar-tools="{ gridApi }">
-      <Button @click="handleAdd">新增 code</Button>
-      <Button @click="handleCustom(gridApi)">自定义 code</Button>
-    </template>  
-    </QueryTable>
-
-</template>   
+  <QueryTable v-if="schema" :schema="schema" :loading="isLoading">
+    <template #toolbar-tools="{ gridApi }">
+      <Button type="primary" @click="openFormOnlyModal('add', gridApi)">
+        新增
+      </Button>
+      <Button type="primary" @click="openFormOnlyModal('edit', gridApi)">
+        编辑
+      </Button>
+      <FormOnlyModal class="w-[1000px]" title="所有表单控件示例">
+        <div style="padding:20px">
+          <component v-for="(item, index) in formLayout" :key="index" :is="componentMap[item.type](item)" />
+        </div>
+      </FormOnlyModal>
+    </template>
+  </QueryTable>
+</template>

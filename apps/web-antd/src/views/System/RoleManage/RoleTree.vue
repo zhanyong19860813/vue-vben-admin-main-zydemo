@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { Tree as ATree, Button, message } from 'ant-design-vue';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { useVbenModal } from '@vben/common-ui';
 
@@ -20,7 +21,7 @@ const currentRoleName = ref<string>();
 // ================== 加载树 ==================
 const loadTree = async () => {
   const res = await requestClient.get(
-    'http://localhost:5155/api/QueryTreeData/tree'
+    backendApi('QueryTreeData/tree')
   );
   roleTreeDatas.value = res;
   expandedKeys.value = res.map((n: any) => n.key);
@@ -75,7 +76,7 @@ async function roleDelete() {
   }
 
   await requestClient.post(
-    'http://localhost:5155/api/DataBatchDelete/BatchDelete',
+    backendApi('DataBatchDelete/BatchDelete'),
     [
       {
         tablename: 'vben_role',
@@ -95,8 +96,7 @@ async function roleDelete() {
 
 <template>
   <div
-    class="mr-2 rounded-[var(--radius)] border border-border bg-card p-2"
-    style="min-width: 250px; height: 600px"
+    class="mr-2 flex h-full min-w-[250px] flex-col rounded-[var(--radius)] border border-border bg-card p-2"
   >
     <!-- 操作按钮 -->
     <div class="mb-2 font-bold text-lg">
@@ -107,13 +107,15 @@ async function roleDelete() {
     </div>
 
     <!-- 角色树（事件参数与原来一致） -->
-    <ATree
-      :tree-data="roleTreeDatas"
-      default-expand-all
-      :expanded-keys="expandedKeys"
-      @expand="handleExpand"
-      @select="handleSelect"
-    />
+    <div class="min-h-0 flex-1 overflow-auto">
+      <ATree
+        :tree-data="roleTreeDatas"
+        default-expand-all
+        :expanded-keys="expandedKeys"
+        @expand="handleExpand"
+        @select="handleSelect"
+      />
+    </div>
 
     <FormModal />
   </div>

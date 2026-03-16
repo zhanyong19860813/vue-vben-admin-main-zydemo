@@ -1,10 +1,26 @@
 <script setup lang="ts">
 import { Button, Modal, message } from 'ant-design-vue';
-import { ref, computed } from 'vue';
+//  import ModalWrapper from '#/components/ModalWrapper.vue';
+import { computed, ref, watch, defineAsyncComponent, h, onBeforeUnmount } from 'vue';
+import FormTabsTableContent from '#/components/FormTabsTableModal/FormTabsTableContent.vue';
+import FormFromDesignerModal from '#/views/EntityList/FormFromDesignerModal.vue';
+import type { TabTableItem } from '#/components/FormTabsTableModal/types';
 import axios from 'axios';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import { backendApi } from '#/api/constants';
+import { recordOperationLog } from '#/api/operationLog';
 import { requestClient } from '#/api/request';
+import { resolveDictionaryInSchema } from '#/views/demos/form-designer/resolveDictionarySchema';
 import type { QueryTableSchema } from './types';
+
+import { getCurrentInstance } from 'vue'
+
+const vm = getCurrentInstance();
+ 
+ 
+import {   createApp } from 'vue';
+ 
+//import { Modal } from 'ant-design-vue';
 
 /**
  * props
@@ -14,13 +30,46 @@ const props = defineProps<{
 }>();
 
 /**
- * 当前查询条件（导出用）
+ * 当前查询条件
  */
 const currentQuery = ref<Record<string, any>>({});
 
 /**
+ * 工具栏按钮（合并 toolbar.actions + 无配置时的公共按钮兜底）
+ */
+const toolbarActionsForRender = computed(() => {
+  const actions = props.schema.toolbar?.actions ?? [];
+  if (actions.length > 0) return actions;
+  // 向后兼容：无 toolbar.actions 时，若有 api 则显示公共按钮
+  const fallback: any[] = [];
+  if (props.schema.api?.delete) fallback.push({ key: 'deleteSelected', label: '删除', action: 'deleteSelected' });
+  if (props.schema.api?.export) fallback.push({ key: 'export', label: '导出', action: 'export' });
+  fallback.push({ key: 'reload', label: '刷新', action: 'reload', type: 'primary' });
+  return fallback;
+});
+
+/** 解析查询表单 schema 中的数据字典（Select 等控件的 options） */
+const resolvedFormOptions = ref<any>({ schema: [], collapsed: false, submitOnChange: true });
+watch(
+  () => props.schema?.form,
+  async (form) => {
+    if (!form) {
+      resolvedFormOptions.value = { schema: [], collapsed: false, submitOnChange: true };
+      return;
+    }
+    const rawSchema = form.schema ?? [];
+    const hasDict = rawSchema.some(
+      (s: any) => s?.componentProps?.dataSourceType === 'dictionary' && s?.componentProps?.dictionaryId,
+    );
+    const schema = hasDict ? await resolveDictionaryInSchema([...rawSchema]) : rawSchema;
+    resolvedFormOptions.value = { ...form, schema };
+  },
+  { immediate: true, deep: true },
+);
+
+/**
  * ===============================
- * 1️⃣ 初始化 Grid（你原来的方式）
+ * 1️⃣ 初始化 Grid
  * ===============================
  */
 const [Grid, gridApi] = useVbenVxeGrid({
@@ -34,7 +83,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
               ([_, v]) => v !== undefined && v !== null && v !== ''
             )
           );
-
           currentQuery.value = cleanWhere;
 
           return requestClient.post(props.schema.api.query, {
@@ -54,12 +102,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
       },
     },
   },
-  formOptions: props.schema.form,
+  formOptions: computed(() => resolvedFormOptions.value),
 });
 
 /**
  * ===============================
- * 2️⃣ 预加载 EntityList action 模块
+ * 2️⃣ 预加载 action 模块（仍然 eager）
  * ===============================
  */
 const actionModules = import.meta.glob(
@@ -69,43 +117,190 @@ const actionModules = import.meta.glob(
 
 /**
  * ===============================
- * 3️⃣ schema toolbar action 分发
+ * 3️⃣ 打开弹窗（只在当前组件内部）
  * ===============================
  */
-async function handleToolbarClick(btn: any) {
-  const actionName = btn.action;
-  if (!actionName) {
-    message.warning('按钮未配置 action');
+/**
+ * ===============================
+ * 3️⃣ 打开弹窗（修复版）
+ * ===============================
+ */
+async function openModal(componentPath: string, modalProps?: Record<string, any>) {
+  return new Promise((resolve) => {
+    const AsyncComp = defineAsyncComponent(() =>
+      import(`/src/views/${componentPath}.vue`)
+    )
+
+    const modalInstance = Modal.confirm({
+      title: modalProps?.title || '',
+      icon: null,
+      width: 800,
+      footer: null,
+      content: () => {
+        const vnode = h(AsyncComp, {
+          ...(modalProps || {}),
+          onSuccess: (data: any) => {
+            resolve(data || 'success')
+            modalInstance.destroy()
+          },
+          onCancel: () => {
+            resolve('cancel')
+            modalInstance.destroy()
+          }
+        })
+
+        // ⭐ 关键
+        if (vm) {
+          vnode.appContext = vm.appContext
+        }
+
+        return vnode
+      },
+    })
+  })
+}
+
+/**
+ * 按 form_code 加载表单设计器配置，打开 FormFromDesignerModal
+ */
+async function openFormFromDesignerModal(
+  formCode: string,
+  options?: { initialValues?: Record<string, any>; title?: string }
+) {
+  const res = await requestClient.post<{
+    items: Array<{ schema_json?: string; code?: string; title?: string }>;
+  }>(backendApi('DynamicQueryBeta/queryforvben'), {
+    TableName: 'vben_form_desinger',
+    Page: 1,
+    PageSize: 1,
+    SortBy: 'updated_at',
+    SortOrder: 'desc',
+    Where: {
+      Logic: 'AND',
+      Conditions: [{ Field: 'code', Operator: 'eq', Value: formCode.trim() }],
+      Groups: [],
+    },
+  });
+  const items = res?.items ?? [];
+  const rec = items[0];
+  if (!rec?.schema_json) {
+    message.warning(`未找到 code 为「${formCode}」的表单配置`);
     return;
   }
+  const parsed = JSON.parse(rec.schema_json) as {
+    layout?: { cols?: number; labelWidth?: number; labelAlign?: string };
+    schema?: any[];
+  };
+  const formSchema = Array.isArray(parsed?.schema) ? parsed.schema : [];
+  const saveEntityName = props.schema.saveEntityName ?? props.schema.tableName ?? '';
+  const primaryKey = props.schema.primaryKey ?? 'id';
 
-  const entity = props.schema.tableName;
-  const modulePath =props.schema.actionModule;// `/src/views/EntityList/${entity}.ts`;
-  const mod: any = actionModules[modulePath];
-
-  if (!mod || !mod.default) {
-    message.error(`未找到 action 模块：${entity}.ts`);
-    return;
-  }
-
-  const fn = mod.default[actionName];
-  if (!fn) {
-    message.error(`未找到 action：${actionName}`);
-    return;
-  }
-
-  await fn({
-    gridApi,
-    schema: props.schema,
+  let modalInstance: any = null;
+  modalInstance = Modal.confirm({
+    title: options?.title ?? rec.title ?? '表单',
+    icon: null,
+    width: 640,
+    footer: null,
+    content: () => {
+      const vnode = h(FormFromDesignerModal, {
+        formSchema,
+        saveEntityName,
+        primaryKey,
+        formTitle: rec.title ?? '表单',
+        layout: parsed.layout,
+        initialValues: options?.initialValues,
+        onSuccess: () => {
+          modalInstance?.destroy?.();
+          gridApi.reload();
+        },
+        onCancel: () => modalInstance?.destroy?.(),
+      });
+      if (vm) vnode.appContext = vm.appContext;
+      return vnode;
+    },
   });
 }
 
 /**
  * ===============================
- * 4️⃣ 默认删除（所有列表通用）
+ * 4️⃣ toolbar 分发（核心改造点）
+ * ===============================
+ */
+async function handleToolbarClick(btn: any) {
+  const actionName = btn.action;
+  recordOperationLog({
+    actionType: 'button_click',
+    target: btn.key || actionName,
+    description: `点击: ${btn.label || actionName} (${props.schema.tableName || ''})`,
+  });
+
+  // 1️⃣ 尝试执行 actionModule 中的 handler
+  const modulePath = props.schema.actionModule;
+  const mod: any = modulePath ? actionModules[modulePath] : null;
+  const fn = actionName ? mod?.default?.[actionName] : null;
+
+  if (fn) {
+    const result = await fn({ gridApi, schema: props.schema, btn });
+    if (result?.type === 'openModal') {
+      await openModal(result.component, {
+        ...result.props,
+        width: result.props?.width || 800,
+        style: { height: result.props?.height || '500px' },
+      });
+      gridApi.reload();
+      return;
+    }
+    if (result?.type === 'openFormTabsTableModal') {
+      openFormTabsTableModal({
+        title: result.title || '表单 + 页签 + 表格',
+        formSchema: result.formSchema,
+        tabs: result.tabs,
+        width: result.width,
+      });
+      return;
+    }
+    if (result?.type === 'openFormFromDesigner') {
+      await openFormFromDesignerModal(result.formCode, {
+        initialValues: result.initialValues,
+        title: result.title,
+      });
+      return;
+    }
+    return;
+  }
+
+  // 2️⃣ 无自定义 handler：若按钮有 form_code，自动按 form_code 打开表单
+  const formCode = btn.form_code ?? btn.formCode;
+  if (formCode?.trim()) {
+    const requiresSelection = btn.requiresSelection ?? btn.requires_selection;
+    let initialValues: Record<string, any> | undefined;
+    if (requiresSelection) {
+      const rows = gridApi.grid?.getCheckboxRecords?.() ?? [];
+      if (!rows.length) {
+        message.warning('请先选择一条数据');
+        return;
+      }
+      initialValues = rows[0];
+    }
+    await openFormFromDesignerModal(formCode, { initialValues, title: btn.label });
+    return;
+  }
+
+  message.warning(`未配置 action 模块或 form_code，无法处理按钮「${btn.label}」`);
+}
+ 
+
+/**
+ * ===============================
+ * 5️⃣ 删除
  * ===============================
  */
 async function handleDelete() {
+  recordOperationLog({
+    actionType: 'button_click',
+    target: 'deleteSelected',
+    description: `点击: 删除 (${props.schema.tableName || ''})`,
+  });
   const grid = gridApi.grid;
   if (!grid) return;
 
@@ -139,10 +334,15 @@ async function handleDelete() {
 
 /**
  * ===============================
- * 5️⃣ 默认导出（所有列表通用）
+ * 6️⃣ 导出
  * ===============================
  */
 async function handleExport() {
+  recordOperationLog({
+    actionType: 'button_click',
+    target: 'export',
+    description: `点击: 导出 (${props.schema.tableName || ''})`,
+  });
   const sort = gridApi.grid?.getSortColumns?.()?.[0];
 
   const queryField = props.schema.grid.columns
@@ -172,7 +372,54 @@ async function handleExport() {
 }
 
 /**
- * 暴露 gridApi 给 slot
+ * FormTabsTable 弹窗 - 使用 Modal.confirm 动态创建，避免影响路由切换
+ */
+let formTabsTableModalInstance: any = null;
+
+onBeforeUnmount(() => {
+  formTabsTableModalInstance?.destroy?.();
+  formTabsTableModalInstance = null;
+});
+
+interface OpenFormTabsTableOptions {
+  title?: string;
+  formSchema: any[];
+  tabs: TabTableItem[];
+  width?: number;
+}
+
+function openFormTabsTableModal(options: OpenFormTabsTableOptions) {
+  const { title = '表单 + 页签 + 表格', formSchema, tabs, width = 900 } = options;
+
+  formTabsTableModalInstance = Modal.confirm({
+    title,
+    icon: null,
+    width,
+    footer: null,
+    content: () => {
+      const vnode = h(FormTabsTableContent, {
+        formSchema,
+        tabs,
+        onSuccess: () => {
+          formTabsTableModalInstance?.destroy?.();
+          formTabsTableModalInstance = null;
+          gridApi.reload();
+        },
+        onCancel: () => {
+          formTabsTableModalInstance?.destroy?.();
+          formTabsTableModalInstance = null;
+        },
+      });
+      if (vm) {
+        vnode.appContext = vm.appContext;
+      }
+      return vnode;
+    },
+  });
+}
+
+/**
+ * 暴露 gridApi
  */
 defineExpose({ gridApi });
 </script>
@@ -181,74 +428,76 @@ defineExpose({ gridApi });
   <Grid :table-title="schema.title">
     <template #toolbar-tools>
       <div class="query-table-toolbar">
-
-        <!-- ① schema 定义按钮 -->
         <div class="toolbar-left">
-          <Button
-            v-for="btn in schema.toolbar?.actions || []"
-            :key="btn.key"
-            class="mr-2"
-            :type="btn.type || 'default'"
-            @click="handleToolbarClick(btn)"
-          >
-            {{ btn.label }}
-          </Button>
+          <!-- 公共按钮（删除/导出/刷新）与自定义按钮统一从 toolbar.actions 渲染；无配置时向后兼容显示 -->
+          <template v-for="btn in toolbarActionsForRender" :key="btn.key">
+            <Button
+              v-if="btn.action === 'deleteSelected' && schema.api?.delete"
+              danger
+              class="mr-2"
+              @click="handleDelete"
+            >
+              {{ btn.label || '删除' }}
+            </Button>
+            <Button
+              v-else-if="(btn.action === 'export' || btn.action === 'expol') && schema.api?.export"
+              class="mr-2"
+              @click="handleExport"
+            >
+              {{ btn.label || '导出' }}
+            </Button>
+            <Button
+              v-else-if="btn.action === 'reload'"
+              type="primary"
+              class="mr-2"
+              @click="gridApi.reload()"
+            >
+              {{ btn.label || '刷新' }}
+            </Button>
+            <Button
+              v-else
+              class="mr-2"
+              :type="btn.type || 'default'"
+              @click="handleToolbarClick(btn)"
+            >
+              {{ btn.label }}
+            </Button>
+          </template>
         </div>
 
-        <!-- ② 默认通用按钮 -->
-        <div class="toolbar-center">
-          <Button
-            v-if="schema.api.delete"
-            danger
-            class="mr-2"
-            @click="handleDelete"
-          >
-            删除
-          </Button>
-
-          <Button
-            v-if="schema.api.export"
-            class="mr-2"
-            @click="handleExport"
-          >
-            导出
-          </Button>
-
-          <Button type="primary" @click="gridApi.reload()">
-            刷新
-          </Button>
-        </div>
-
-        <!-- ③ 页面 slot 扩展 -->
         <div class="toolbar-right">
           <slot name="toolbar-tools" :gridApi="gridApi" />
         </div>
-
       </div>
     </template>
   </Grid>
 </template>
-
 <style scoped>
- .query-table-toolbar {
+
+.query-table-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap; /* 不换行 */
+  width: 100%;
 }
+
 .toolbar-left,
 .toolbar-center,
 .toolbar-right {
   display: flex;
   align-items: center;
 }
+
 .toolbar-left {
-  flex: 1;
+  gap: 8px;
 }
+
 .toolbar-center {
-  flex: 1;
-  justify-content: center;
+  gap: 8px;
 }
+
 .toolbar-right {
-  flex: 1;
-  justify-content: flex-end;
-}  
-</style>
+  gap: 8px;
+}
+ </style>

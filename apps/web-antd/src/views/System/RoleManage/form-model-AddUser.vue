@@ -4,6 +4,7 @@ import { useVbenModal } from '@vben/common-ui';
 import { message } from 'ant-design-vue';
 
 import { useVbenForm } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { reactive, ref, onMounted } from 'vue';
 
@@ -28,7 +29,7 @@ const submitSuccessCb = ref<undefined | (() => void)>();
     console.log('远程搜索关键词：', currentKeyword);
 
     const res =  await requestClient.get(
-          'http://localhost:5155/api/DynamicQueryBeta/query',
+          backendApi('DynamicQueryBeta/query'),
           {
             params:
             {
@@ -165,7 +166,7 @@ async function onSubmit(values: Record<string, any>) {
     user_id: values.user_id
   };
 
-   const res = await requestClient.post<ApiResponse>('http://localhost:5155/api/DataSave/datasave',
+   const res = await requestClient.post<ApiResponse>(backendApi('DataSave/datasave'),
     {
       //tableName: "vben_t_sys_user",
       tableName: "vben_t_sys_user_role",

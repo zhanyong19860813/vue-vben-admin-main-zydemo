@@ -15,6 +15,10 @@ const authStore = useAuthStore();
 
 const MOCK_USER_OPTIONS: BasicOption[] = [
   {
+    label: 'A8425 (本机默认账号)',
+    value: 'A8425',
+  },
+  {
     label: 'Super',
     value: 'vben',
   },
@@ -42,7 +46,7 @@ const formSchema = computed((): VbenFormSchema[] => {
         .string()
         .min(1, { message: $t('authentication.selectAccount') })
         .optional()
-        .default('vben'),
+        .default('A8425'),
     },
     {
       component: 'VbenInput',
@@ -56,8 +60,9 @@ const formSchema = computed((): VbenFormSchema[] => {
               (item) => item.value === values.selectAccount,
             );
             if (findUser) {
+              const isDefault = findUser.value === 'A8425';
               form.setValues({
-                password: '123456',
+                password: isDefault ? 'sj123456' : '123456',
                 username: findUser.value,
               });
             }
@@ -67,7 +72,10 @@ const formSchema = computed((): VbenFormSchema[] => {
       },
       fieldName: 'username',
       label: $t('authentication.username'),
-      rules: z.string().min(1, { message: $t('authentication.usernameTip') }),
+      rules: z
+        .string()
+        .min(1, { message: $t('authentication.usernameTip') })
+        .default('A8425'),
     },
     {
       component: 'VbenInputPassword',
@@ -76,7 +84,10 @@ const formSchema = computed((): VbenFormSchema[] => {
       },
       fieldName: 'password',
       label: $t('authentication.password'),
-      rules: z.string().min(1, { message: $t('authentication.passwordTip') }),
+      rules: z
+        .string()
+        .min(1, { message: $t('authentication.passwordTip') })
+        .default('sj123456'),
     },
     {
       component: markRaw(SliderCaptcha),

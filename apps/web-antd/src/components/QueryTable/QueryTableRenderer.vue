@@ -8,6 +8,45 @@ const props = defineProps<{
   schema: QueryTableSchema;
 }>();
 
+
+
+const modalModules = import.meta.glob(
+  '/src/views/dynamic-modals/**/*.vue'
+);
+// 模态框栈（示例，实际使用中可根据需要实现更复杂的模态管理）
+const modalStack = ref<any[]>([]);
+
+// 打开模态框（示例函数，实际使用中可根据需要传入更多参数）
+// function openModal(options: any) {
+//   modalStack.value.push({
+//     id: Date.now() + Math.random(),
+//     ...options,
+//   });
+// }
+// 打开模态框（示例函数，实际使用中可根据需要传入更多参数）
+async function openModal(options: any) {
+  const fullPath = `/src/views/dynamic-modals/${options.component}.vue`;
+
+  const loader = modalModules[fullPath];
+  if (!loader) {
+    console.error('未找到弹框组件:', fullPath);
+    return;
+  }
+
+  const mod: any = await loader();
+
+  modalStack.value.push({
+    id: Date.now() + Math.random(),
+    component: mod.default,
+    props: options.props || {},
+  });
+}
+
+// 关闭模态框 （示例函数，实际使用中可根据需要实现更复杂的关闭逻辑）
+function closeModal(id: string) {
+  modalStack.value = modalStack.value.filter(m => m.id !== id);
+}
+
 /**
  * 1️⃣ 初始化 Grid
  */
@@ -50,6 +89,7 @@ onMounted(async () => {
 const buildActionContext = () => ({
   gridApi,
   schema: props.schema,
+  openModal,
 });
 
 /**
@@ -108,6 +148,15 @@ defineExpose({
 </script>
 
 <template>
+
+   <component
+  v-for="modal in modalStack"
+  :key="modal.id"
+  :is="modal.component"
+  v-bind="modal.props"
+  @close="closeModal(modal.id)"
+/>
+
   <Grid :table-title="schema.title">
     <!-- 🔥 ① schema 配置的 toolbar 按钮 -->
     <template #toolbar-tools>

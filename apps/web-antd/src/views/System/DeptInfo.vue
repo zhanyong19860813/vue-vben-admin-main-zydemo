@@ -6,6 +6,7 @@ import { Page } from '@vben/common-ui';
 import { Button } from 'ant-design-vue';
 
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { reactive, ref ,onMounted } from 'vue';
 
@@ -31,7 +32,7 @@ onMounted(async () => {
   
   
         const res = await requestClient.post(
-      'http://localhost:5155/api/DynamicQueryBeta/queryforvben',
+      backendApi('DynamicQueryBeta/queryforvben'),
       {
   "tableName": "t_base_department",
   "page": 1,
@@ -69,7 +70,7 @@ const gridOptions: VxeGridProps<RowType> = {
 
 
                 const res = await requestClient.post(
-            'http://localhost:5155/api/DynamicQueryBeta/queryforvben',
+            backendApi('DynamicQueryBeta/queryforvben'),
             {
         "tableName": "t_base_department",
         "page": 1,

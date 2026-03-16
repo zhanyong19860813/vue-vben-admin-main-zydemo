@@ -5,6 +5,7 @@ import QueryTable from '#/components/QueryTable/index.vue';
 import { companySchema } from './company.schema';
 import { employeeSchema } from './employee.schema';
 import { useRoute } from 'vue-router';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
  
 
@@ -49,15 +50,15 @@ watch(
     try {
       console.log('正在请求 schema，实体名称:', newEntityName);
       const res = await requestClient.get(
-        'http://localhost:5155/api/VbenSchema/GetSchema',
+        backendApi('VbenSchema/GetSchema'),
         {
           params: { entityName: newEntityName }
         }
       );
-      console.log('请求到的 schema:', res);
+      console.log('1请求到的 schema:', res);
       remoteSchema.value = res;
     } catch (err) {
-      console.error('请求 schema 失败:', err);
+      console.error('2请求 schema 失败:', err);
       //error.value = err;
       remoteSchema.value = null; // 请求失败时清空
       message.error(`获取 schema 失败`);
@@ -73,11 +74,14 @@ watch(
 const currentSchema = computed(() => {
   // 如果有远程 schema，直接返回
   if (remoteSchema.value) {
-    console.log('使用远程 schema:', remoteSchema.value);
+    console.log('3使用远程 schema:', remoteSchema.value);
+     
+    console.log('4使用远程 schema.grid:', remoteSchema.grid);
+
     return remoteSchema.value;
   }
   // 否则根据实体名称返回本地兜底 schema
-  console.log('使用本地兜底 schema，实体名称:', entityName.value);
+  console.log('5使用本地兜底 schema，实体名称:', entityName.value);
   switch (entityName.value) {
     case 'company':
       return companySchema;

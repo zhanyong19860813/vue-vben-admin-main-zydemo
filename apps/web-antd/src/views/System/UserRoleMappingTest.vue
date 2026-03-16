@@ -4,6 +4,7 @@ import { reactive, ref ,onMounted } from 'vue';
 import { ColPage } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 //import { BasicTree } from '#/components/Tree';
 
@@ -45,7 +46,7 @@ onMounted(async () => {
 
   try {
 
-    const res = await requestClient.get('http://localhost:5155/api/QueryTreeData/tree');
+    const res = await requestClient.get(backendApi('QueryTreeData/tree'));
      roleTreeDatas.value = res;
 
     // 默认展开第一层
@@ -91,7 +92,7 @@ const gridMenuOptions: VxeGridProps<RowMenuType> = {
       
 
           const res = await requestClient.get(
-          'http://localhost:5155/api//query?tableName=vben_role_menu&role_id=' + currentRoleId.value + '&OrderBy=user_code DESC&Top=10'
+          backendApi('query') + '?tableName=vben_role_menu&role_id=' + currentRoleId.value + '&OrderBy=user_code DESC&Top=10'
         )
 
       },

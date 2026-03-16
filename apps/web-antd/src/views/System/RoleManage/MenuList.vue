@@ -2,6 +2,7 @@
 import { watch, nextTick } from 'vue';
 import { Button, message } from 'ant-design-vue';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { useVbenModal } from '@vben/common-ui';
 
@@ -16,6 +17,7 @@ const props = defineProps<{
 // ================= 表格 =================
 const [MenuGrid, gridMenuApi] = useVbenVxeGrid({
   gridOptions: {
+    height: 550,
     columns: [
       { type: 'checkbox', width: 60 },
       { type: 'seq', width: 50 },
@@ -47,7 +49,7 @@ const [MenuGrid, gridMenuApi] = useVbenVxeGrid({
           }
 
           const res = await requestClient.get(
-            'http://localhost:5155/api/DynamicQueryBeta/query',
+            backendApi('DynamicQueryBeta/query'),
             {
               params: {
                 tableName: 'vben_v_role_menu',
@@ -126,7 +128,7 @@ async function deleteMenu() {
   }
 
   await requestClient.post(
-    'http://localhost:5155/api/DataBatchDelete/BatchDelete',
+    backendApi('DataBatchDelete/BatchDelete'),
     [
       {
         tablename: 'vben_t_sys_role_menus',
@@ -188,7 +190,7 @@ function addButton() {
         删除
       </Button>
       &nbsp;
-      <Button  default @click="addButton">
+      <Button default @click="addButton">
         按钮
       </Button>
     </div>
@@ -199,3 +201,4 @@ function addButton() {
     <FormButtonModal />
   </div>
 </template>
+

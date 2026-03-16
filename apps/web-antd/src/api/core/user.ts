@@ -1,5 +1,6 @@
 import type { UserInfo } from '@vben/types';
 
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 
 /**
@@ -15,7 +16,7 @@ export async function getUserInfoApi() {
  * 获取用户信息  2026.01.20 add by zhanyong begin
  */
 export async function getUserInfoApiFromDb() {
-  const res = await requestClient.get<UserInfo>('http://localhost:5155/api/User/info');
+  const res = await requestClient.get<UserInfo>(backendApi('User/info'));
 
   console.log("api调用getUserInfoApiFromDb 返回res:",res);
 

@@ -1,4 +1,5 @@
 import type { QueryTableSchema } from '#/components/QueryTable/types';
+import { backendApi } from '#/api/constants';
 
 export const companySchema: QueryTableSchema = {
   title: '公司列表',
@@ -38,8 +39,8 @@ export const companySchema: QueryTableSchema = {
   },
 
   api: {
-    query: 'http://127.0.0.1:5155/api/DynamicQueryBeta/queryforvben',
-    delete: 'http://localhost:5155/api/DataBatchDelete/BatchDelete',
-    export: 'http://127.0.0.1:5155/api/DynamicQueryBeta/ExportExcel',
+    query: backendApi('DynamicQueryBeta/queryforvben'),
+    delete: backendApi('DataBatchDelete/BatchDelete'),
+    export: backendApi('DynamicQueryBeta/ExportExcel'),
   },
 };

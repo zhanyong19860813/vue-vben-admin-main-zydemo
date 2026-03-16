@@ -5,6 +5,7 @@ import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { Page } from '@vben/common-ui';
 import { Button, message } from 'ant-design-vue';
 import type { VbenFormProps } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 
 import FormModalDemo from './form-modal-demo.vue';
@@ -49,10 +50,15 @@ const formOptions: VbenFormProps = {
 };
 
 interface RowType {
-  FID: string;
-  Name: string;
-  SimpleName?: string;
-  Location?: string;
+  id: string;
+  name: string;
+  path?: string;
+  component?: string;
+  meta?: string;
+  parent_id?: string | null;
+  status?: number;
+  type?: string;
+  sort?: number;
 }
 
 interface ApiResponse {
@@ -73,12 +79,12 @@ async function getData(page, sort, formValues) {
 
 
     const res = await requestClient.post<ApiResponse>(
-      'http://127.0.0.1:5155/api/DynamicQueryBeta/queryforvben',
+      backendApi('DynamicQueryBeta/queryforvben'),
       {
         TableName: "vben_menus_new",
         Page: page.currentPage,
         PageSize: page.pageSize,
-        SortBy: sort?.field || "Name",
+        SortBy: sort?.field || "sort",
         SortOrder: sort?.order?.toLowerCase() || "asc",
         SimpleWhere: formValues
       },
@@ -98,43 +104,47 @@ async function getData(page, sort, formValues) {
  * 表格配置
  */
 const gridOptions: VxeGridProps<RowType> = {
-  height: '600',
+  height: 1150,
 
   columns: [
-    { align: 'left', title: '选择', type: 'checkbox', width: 100 },
+    { align: 'left', title: '选择', type: 'checkbox', width: 80 },
     { title: '序号', type: 'seq', width: 60 },
-    { field: 'id', title: 'ID', minWidth: 180 },
-    { field: 'name', title: '菜单名', minWidth: 200, sortable: true },
-    { field: 'path', title: '路径', minWidth: 120, sortable: true },
+    { field: 'id', title: 'ID', minWidth: 200 },
+    // 树形节点列：只在「菜单名称」这一列做缩进，其他列正常显示
+    { field: 'name', title: '菜单名称', minWidth: 220, sortable: true, treeNode: true },
+    { field: 'path', title: '路径', minWidth: 160, sortable: true },
     { field: 'component', title: '组件', minWidth: 260, sortable: true },
     { field: 'meta', title: 'meta', minWidth: 260, sortable: true },
-    { field: 'parent_id', title: 'parent_id', minWidth: 180, sortable: true },
+    { field: 'parent_id', title: 'parent_id', minWidth: 200, sortable: true },
     { field: 'status', title: '状态', minWidth: 100, sortable: true },
     { field: 'type', title: '类型', minWidth: 100, sortable: true },
-
+    { field: 'sort', title: '排序', minWidth: 80, sortable: true },
   ],
 
 
+  // 树形配置：扁平数据转树（参考 DeptInfo.vue）
+  treeConfig: {
+    rowField: 'id',
+    parentField: 'parent_id',
+    transform: true,
+    expandAll: true,
+    line: true,
+  },
 
   pagerConfig: {
-    enabled: true,
-    pageSize: 10,
-    pageSizes: [10, 20, 50]
+    enabled: false,
   },
 
   proxyConfig: {
     ajax: {
       query: async ({ page, sort }, formValues) => {
-
-
-        // ✅ 保存当前查询条件（用于导出 / 删除 / 统计等）
         currentQuery.value = { ...formValues };
-
-        // ⚠️ 传入分页 + 排序参数
-        const res = await getData(page, sort, formValues);
+        // 树形需一次拉全量，用大 pageSize
+        const res = await getData({ currentPage: 1, pageSize: 2000 }, sort, formValues);
         return res;
       }
-    }, sort: true
+    },
+    sort: true,
   },
 
   sortConfig: {
@@ -176,6 +186,14 @@ function reload() {
   gridApi.reload();
 }
 
+function expandAll() {
+  gridApi.grid?.setAllTreeExpand(true);
+}
+
+function collapseAll() {
+  gridApi.grid?.setAllTreeExpand(false);
+}
+
 function query() {
   gridApi.query();
 }
@@ -199,7 +217,7 @@ function openFormModal() {
 
   // 传递初始表单值  判断新增还是编辑
   const isEdit = false; // 假设是新增
-  formModalApi
+  //formModalApi
   // .setData({
   //   // 表单值
   //   values: { field1: 'abc', field2: '123' },
@@ -270,7 +288,7 @@ const handleDelete = async () => {
 
 
     const res = await requestClient.post<ApiResponse>(
-      'http://localhost:5155/api/DataBatchDelete/BatchDelete',
+      backendApi('DataBatchDelete/BatchDelete'),
       [
         {
           tablename: "t_base_company",
@@ -324,7 +342,7 @@ const handleExport = async () => {
 
     // ② axios POST 下载 Excel
     const res = await axios.post(
-      'http://localhost:5155/api/DynamicQueryBeta/ExportExcel',
+      backendApi('DynamicQueryBeta/ExportExcel'),
       {
         TableName: 't_base_company',
         columns: ['FID', 'Name', 'SimpleName', 'Location'],
@@ -382,9 +400,11 @@ const handleExport = async () => {
 </script>
 
 <template>
-  <Page title="詹姆斯牛杰瑞公司列表" description="演示 vben + vxe-table 远程数据请求">
-    <Grid table-title="公司信息" table-title-help="数据来自后台接口" v-on="gridEvents" @sort-change="handleSortChange">
+  <Page>
+    <Grid table-title="菜单信息" table-title-help="数据来自后台接口" v-on="gridEvents" @sort-change="handleSortChange">
       <template #toolbar-tools>
+        <Button class="mr-2" type="primary" @click="expandAll">展开全部</Button>
+        <Button class="mr-2" type="primary" @click="collapseAll">折叠全部</Button>
         <Button class="mr-2" type="primary" @click="openFormModal">
           新增
         </Button>
@@ -406,12 +426,12 @@ const handleExport = async () => {
         </Button>
       </template>
     </Grid>
-    <Card class="w-[300px]" title="表单弹窗示例">
+    <!-- <Card class="w-[300px]" title="表单弹窗示例">
       <p>弹窗与表单结合</p>
       <template #actions>
         <Button type="primary" @click="openFormModal"> 打开表单弹窗 </Button>
       </template>
-    </Card>
+    </Card> -->
     <FormModal />
   </Page>
 </template>

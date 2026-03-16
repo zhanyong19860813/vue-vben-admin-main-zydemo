@@ -1,5 +1,6 @@
 import type { RouteRecordStringComponent } from '@vben/types';
 
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 
 import { useAuthStore } from '#/store/auth';
@@ -17,7 +18,7 @@ export async function getAllMenusApi() {
 
   console.log('当前 getAllMenusApi  ');
   //请求后台  返回数据
-  const data = await requestClient.get('http://localhost:5155/api/Menu/GetMenuFromDb').then((res) => {
+  const data = await requestClient.get(backendApi('Menu/GetMenuFromDb')).then((res) => {
 
     console.log('当前 getAllMenusApi res= ', res);
 
@@ -193,51 +194,7 @@ export async function getAllMenusApi() {
       }
     ]
   }
-]
-    ;
-
-
-
-    // res = [
-    //   {
-    //     "name": "Sys",
-    //     "path": "/Sys",
-    //     "meta": {
-    //       "title": "系统设置",
-    //       "icon": "mdi:appstore"
-    //     },
-    //     "children": [
-    //       {
-    //         "name": "UserRoleMapping",
-    //         "path": "UserRoleMapping",      // ✅ 相对路径
-    //         "component": "System/UserRoleMapping",
-    //         "meta": {
-    //           "title": "角色"
-    //         }
-    //       },
-    //       {
-    //         "name": "DeptInfo",
-    //         "path": "DeptInfo",
-    //         "component": "System/DeptInfo",
-    //         "meta": {
-    //           "title": "部门管理"
-    //         }
-    //       }
-    //     ]
-    //   },{
-    //     "name": "Analytics",
-    //     "path": "/analytics",
-    //     "component": "/dashboard/analytics/index",
-    //     "meta": {
-    //       "title": "test",
-    //       "icon": null,
-    //       "affixTab": true
-    //     },
-    //     "children": []
-    //   },
-    // ]
-    // ;
-     //return datamenu;
+] ;
      return res;
   });
 

@@ -4,6 +4,7 @@ import { reactive, ref, onMounted } from 'vue';
 import { ColPage } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 //import { BasicTree } from '#/components/Tree';
 
@@ -54,7 +55,7 @@ onMounted(async () => {
 
   try {
 
-    const res = await requestClient.get('http://localhost:5155/api/QueryTreeData/tree');
+    const res = await requestClient.get(backendApi('QueryTreeData/tree'));
     roleTreeDatas.value = res;
 
     // 默认展开第一层
@@ -100,7 +101,7 @@ const gridOptions: VxeGridProps<RowType> = {
         console.log("当前角色ID:", currentRoleId.value);
 
         const res = await requestClient.get(
-          'http://localhost:5155/api/DynamicQueryBeta/query',
+          backendApi('DynamicQueryBeta/query'),
           {
             params:
             {
@@ -165,7 +166,7 @@ const gridMenuOptions: VxeGridProps<MenuRowType> = {
         }
         console.log("当前角色ID:", currentRoleId.value);
         const res = await requestClient.get(
-          'http://localhost:5155/api/DynamicQueryBeta/query',
+          backendApi('DynamicQueryBeta/query'),
           {
             params:
             {
@@ -254,7 +255,7 @@ const activeKey2 = ref('role');
 
 const reloadRoleTree = async () => {
   try {
-    const treedata = await requestClient.get('http://localhost:5155/api/QueryTreeData/tree');
+    const treedata = await requestClient.get(backendApi('QueryTreeData/tree'));
     roleTreeDatas.value = treedata;
   } catch (error) {
     console.error('刷新树形数据出错:', error);
@@ -300,7 +301,7 @@ const roleDelete = async () => {
     console.log("要删除的角色ID:", currentRoleId.value);
 
     const res = await requestClient.post<ApiResponse>(
-      'http://localhost:5155/api/DataBatchDelete/BatchDelete',
+      backendApi('DataBatchDelete/BatchDelete'),
       [
         {
           tablename: "vben_role",
@@ -314,7 +315,7 @@ const roleDelete = async () => {
     message.success(`成功删除 ${res.deletedCount} 条数据`);
 
     // 刷新树形数据
-    const treedata = await requestClient.get('http://localhost:5155/api/QueryTreeData/tree');
+    const treedata = await requestClient.get(backendApi('QueryTreeData/tree'));
     roleTreeDatas.value = treedata;
   } catch (error) {
     console.error('删除数据出错:', error);

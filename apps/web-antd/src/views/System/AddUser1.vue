@@ -4,6 +4,7 @@ import { useVbenModal } from '@vben/common-ui';
 import { message } from 'ant-design-vue';
 
 import { useVbenForm } from '#/adapter/form';
+import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import { reactive, ref, onMounted } from 'vue';
 
@@ -103,7 +104,7 @@ async function onSubmit(values: Record<string, any>) {
     duration: 0,
     key: 'is-form-submitting',
   });
-  const res = await requestClient.post<ApiResponse>('http://localhost:5155/api/DataSave/datasave',
+  const res = await requestClient.post<ApiResponse>(backendApi('DataSave/datasave'),
     {
       tableName: "vben_role",
       data: [sbumitdata],

@@ -1,3 +1,4 @@
+import { backendApi } from '#/api/constants';
 import { baseRequestClient, requestClient } from '#/api/request';
 
 export namespace AuthApi {
@@ -42,7 +43,7 @@ export async function loginApi(data: AuthApi.LoginParams) {
 // export async function loginApiFromDb(data: AuthApi.LoginParamsFromDb) {
 
 //   console.log("api调用loginApiFromDb 参数:",data);
-//   const res = await requestClient.post('http://localhost:5155/api/Auth/jwtlogin', data);
+//   const res = await requestClient.post(backendApi('Auth/jwtlogin'), data);
 
 //   console.log("api调用loginApiFromDb 返回res:",res);
 //    return {
@@ -52,7 +53,7 @@ export async function loginApi(data: AuthApi.LoginParams) {
 
 export async function loginApiFromDb(data: AuthApi.LoginParamsFromDb) {
    console.log("api调用loginApiFromDb 参数:",data);
-  const res = await requestClient.post('http://localhost:5155/api/Auth/jwtlogin', data);
+  const res = await requestClient.post(backendApi('Auth/jwtlogin'), data);
   console.log("api调用loginApiFromDb 返回res:",res);
   return {
     accessToken: res.accessToken,
