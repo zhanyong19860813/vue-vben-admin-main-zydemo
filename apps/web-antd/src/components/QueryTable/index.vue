@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { Button, Modal, message } from 'ant-design-vue';
 //  import ModalWrapper from '#/components/ModalWrapper.vue';
-import { computed, ref, watch, defineAsyncComponent, h, onBeforeUnmount } from 'vue';
+import {
+  computed,
+  ref,
+  watch,
+  defineAsyncComponent,
+  h,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+} from 'vue';
 import FormTabsTableContent from '#/components/FormTabsTableModal/FormTabsTableContent.vue';
 import FormFromDesignerModal from '#/views/EntityList/FormFromDesignerModal.vue';
 import type { TabTableItem } from '#/components/FormTabsTableModal/types';
@@ -12,6 +21,19 @@ import { recordOperationLog } from '#/api/operationLog';
 import { requestClient } from '#/api/request';
 import { resolveDictionaryInSchema } from '#/views/demos/form-designer/resolveDictionarySchema';
 import type { QueryTableSchema } from './types';
+import { enhanceQueryTableGrid } from './queryTableGridEnhance';
+import { normalizeDesignerGridAggFunc } from './normalizeDesignerGridAggFunc';
+
+/** 默认铺满内容区高度、表体内部滚动；schema.grid.fillViewportHeight === false 时使用原 height/maxHeight */
+function prepareQueryTableGrid(grid: Record<string, any> | undefined) {
+  const merged = enhanceQueryTableGrid(normalizeDesignerGridAggFunc(grid ?? {}));
+  if (merged.fillViewportHeight === false) {
+    const { fillViewportHeight: _f, ...rest } = merged;
+    return rest;
+  }
+  const { height: _h, maxHeight: _m, fillViewportHeight: _f, ...rest } = merged;
+  return rest;
+}
 
 import { getCurrentInstance } from 'vue'
 
@@ -74,7 +96,7 @@ watch(
  */
 const [Grid, gridApi] = useVbenVxeGrid({
   gridOptions: {
-    ...props.schema.grid,
+    ...prepareQueryTableGrid(props.schema.grid as any),
     proxyConfig: {
       ajax: {
         query: async ({ page, sort }, formValues) => {
@@ -104,6 +126,75 @@ const [Grid, gridApi] = useVbenVxeGrid({
   },
   formOptions: computed(() => resolvedFormOptions.value),
 });
+
+/** 默认按视口自适应高度；grid.fillViewportHeight === false 时用 schema 里的 height/maxHeight */
+const fillViewportEnabled = computed(
+  () => (props.schema.grid as Record<string, any> | undefined)?.fillViewportHeight !== false,
+);
+
+const layoutRef = ref<HTMLElement | null>(null);
+let layoutResizeObserver: ResizeObserver | null = null;
+let layoutRaf = 0;
+/** FormTabsTable 弹窗实例，卸载时销毁 */
+let formTabsTableModalInstance: any = null;
+
+function measureQueryTableViewportHeight(): number {
+  const el = layoutRef.value;
+  if (!el) return 0;
+  const rect = el.getBoundingClientRect();
+  const fromParent = Math.floor(rect.height);
+  if (fromParent >= 120) return fromParent;
+  const top = rect.top;
+  return Math.max(0, Math.floor(window.innerHeight - top - 12));
+}
+
+function applyQueryTableGridViewportHeight() {
+  if (!fillViewportEnabled.value) return;
+  const h = measureQueryTableViewportHeight();
+  const px = Math.max(260, h);
+  gridApi.setGridOptions({ height: px });
+  nextTick(() => {
+    try {
+      gridApi.grid?.recalculate?.();
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+function scheduleApplyQueryTableGridHeight() {
+  cancelAnimationFrame(layoutRaf);
+  layoutRaf = requestAnimationFrame(() => {
+    layoutRaf = 0;
+    applyQueryTableGridViewportHeight();
+  });
+}
+
+onMounted(() => {
+  nextTick(() => {
+    scheduleApplyQueryTableGridHeight();
+    layoutResizeObserver = new ResizeObserver(() => scheduleApplyQueryTableGridHeight());
+    if (layoutRef.value) {
+      layoutResizeObserver.observe(layoutRef.value);
+    }
+    window.addEventListener('resize', scheduleApplyQueryTableGridHeight);
+  });
+});
+
+onBeforeUnmount(() => {
+  formTabsTableModalInstance?.destroy?.();
+  formTabsTableModalInstance = null;
+  layoutResizeObserver?.disconnect();
+  layoutResizeObserver = null;
+  window.removeEventListener('resize', scheduleApplyQueryTableGridHeight);
+  cancelAnimationFrame(layoutRaf);
+});
+
+watch(
+  () => [fillViewportEnabled.value, resolvedFormOptions.value, props.schema?.grid],
+  () => nextTick(scheduleApplyQueryTableGridHeight),
+  { deep: true },
+);
 
 /**
  * ===============================
@@ -374,13 +465,6 @@ async function handleExport() {
 /**
  * FormTabsTable 弹窗 - 使用 Modal.confirm 动态创建，避免影响路由切换
  */
-let formTabsTableModalInstance: any = null;
-
-onBeforeUnmount(() => {
-  formTabsTableModalInstance?.destroy?.();
-  formTabsTableModalInstance = null;
-});
-
 interface OpenFormTabsTableOptions {
   title?: string;
   formSchema: any[];
@@ -425,7 +509,8 @@ defineExpose({ gridApi });
 </script>
 
 <template>
-  <Grid :table-title="schema.title">
+  <div ref="layoutRef" class="query-table-layout">
+    <Grid class="query-table-vben-grid" :table-title="schema.title">
     <template #toolbar-tools>
       <div class="query-table-toolbar">
         <div class="toolbar-left">
@@ -470,9 +555,28 @@ defineExpose({ gridApi });
         </div>
       </div>
     </template>
-  </Grid>
+    </Grid>
+  </div>
 </template>
 <style scoped>
+/* 占满布局内容区：外层不滚动，由 vxe 表体承担纵向滚动 */
+.query-table-layout {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.query-table-layout :deep(.query-table-vben-grid) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
+}
 
 .query-table-toolbar {
   display: flex;

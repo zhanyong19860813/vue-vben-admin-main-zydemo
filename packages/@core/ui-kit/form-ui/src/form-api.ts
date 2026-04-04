@@ -16,6 +16,7 @@ import { isRef, toRaw } from 'vue';
 import { Store } from '@vben-core/shared/store';
 import {
   bindMethods,
+  coerceAntdDatePickerFormValues,
   createMerge,
   formatDate,
   isDate,
@@ -325,8 +326,12 @@ export class FormApi {
     shouldValidate: boolean = false,
   ) {
     const form = await this.getForm();
+    const fieldsAdapted = coerceAntdDatePickerFormValues(
+      { ...fields },
+      this.state?.schema,
+    );
     if (!filterFields) {
-      form.setValues(fields, shouldValidate);
+      form.setValues(fieldsAdapted, shouldValidate);
       return;
     }
 
@@ -336,6 +341,8 @@ export class FormApi {
      * element-plus的日期时间相关组件的值类型可能为Date对象
      * 以上两种类型需要排除深度合并
      */
+    // defu：merger 返回 true 会跳过默认赋值。仅当 key 已在 obj 中时才自定义合并；
+    // 若 key 尚不存在（字段刚出现在 schema、vee 尚未注册），必须返回 false，让 defu 写入 object[key] = value。
     const fieldMergeFn = createMerge((obj, key, value) => {
       if (key in obj) {
         obj[key] =
@@ -345,10 +352,11 @@ export class FormApi {
           !isDate(obj[key])
             ? fieldMergeFn(value, obj[key])
             : value;
+        return true;
       }
-      return true;
+      return false;
     });
-    const filteredFields = fieldMergeFn(fields, form.values);
+    const filteredFields = fieldMergeFn(fieldsAdapted, form.values);
     form.setValues(filteredFields, shouldValidate);
   }
 

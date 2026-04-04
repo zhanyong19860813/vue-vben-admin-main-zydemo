@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router';
 import { LOGIN_PATH } from '@vben/constants';
 import { preferences } from '@vben/preferences';
 import { resetAllStores, useAccessStore, useUserStore } from '@vben/stores';
+import { coreRouteNames } from '#/router/routes';
 
 import { notification } from 'ant-design-vue';
 import { defineStore } from 'pinia';
@@ -95,6 +96,24 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // 不做任何处理
     }
+
+    // 退出登录时清理动态路由，避免二次登录时旧路由树残留导致父子同名/重复注册。
+    // 核心路由名保留，其它（菜单生成的动态路由）全部移除。
+    const keepNames = new Set<string>([
+      ...coreRouteNames,
+      'FallbackNotFound',
+    ]);
+    router.getRoutes().forEach((r) => {
+      const name = r.name;
+      if (!name || typeof name === 'symbol') return;
+      if (keepNames.has(name as string)) return;
+      try {
+        router.removeRoute(name as string);
+      } catch {
+        // best-effort cleanup
+      }
+    });
+
     resetAllStores();
     accessStore.setLoginExpired(false);
 

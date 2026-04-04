@@ -101,10 +101,12 @@ const currentSchema = computed(() => {
   <div v-else-if="error" style="padding: 20px; text-align: center; color: #ff4d4f;">
     加载失败：{{ error.message || '未知错误' }}
   </div>  
-    <QueryTable     :schema="currentSchema">
+    <div class="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+    <QueryTable :schema="currentSchema">
      <template #toolbar-tools="{ gridApi }">
       <Button @click="handleAdd">新增 code</Button>
       <Button @click="handleCustom(gridApi)">自定义 code</Button>
     </template>  
-  </QueryTable> 
+  </QueryTable>
+    </div>
 </template>

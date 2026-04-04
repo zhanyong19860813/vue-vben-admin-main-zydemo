@@ -121,9 +121,11 @@ const computedSchema = computed(
 
       const hidden =
         // 折叠状态 & 显示折叠按钮 & 当前索引大于保留索引
-        props.showCollapseButton && !!formCollapsed.value && keepIndex
+        (props.showCollapseButton && !!formCollapsed.value && keepIndex
           ? keepIndex <= index
-          : false;
+          : false) ||
+        // 属性配置「界面上不显示」：不占布局空间（display: none）
+        (schema.componentProps as Record<string, unknown>)?.type === 'hidden';
 
       // 处理函数形式的formItemClass
       let resolvedSchemaFormItemClass = schema.formItemClass;

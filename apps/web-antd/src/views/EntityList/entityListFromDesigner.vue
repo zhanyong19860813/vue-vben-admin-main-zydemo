@@ -204,7 +204,7 @@ onBeforeRouteUpdate(() => {
 </script>
 
 <template>
-  <div class="relative">
+  <div class="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
     <QueryTable v-if="schema" :schema="schema" :loading="isLoading" />
     <div
       v-else-if="!entityName"

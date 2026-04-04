@@ -61,6 +61,13 @@ const errors = useFieldError(fieldName);
 const fieldComponentRef = useTemplateRef<HTMLInputElement>('fieldComponentRef');
 const formApi = formRenderProps.form;
 const compact = computed(() => formRenderProps.compact);
+const formItemGapPx = computed(() => {
+  const v = formRenderProps.formItemGapPx as unknown;
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 120) return null;
+  return Math.round(n);
+});
 const isInValid = computed(() => errors.value?.length > 0);
 
 const FieldComponent = computed(() => {
@@ -295,11 +302,20 @@ onUnmounted(() => {
         'form-valid-error': isInValid,
         'form-is-required': shouldRequired,
         'flex-col': isVertical,
-        'flex-row items-center': !isVertical,
-        'pb-4': !compact,
-        'pb-2': compact,
+        'flex-row items-center': !isVertical && formItemGapPx == null,
+        'flex-row items-start': !isVertical && formItemGapPx != null,
+        'pb-4': formItemGapPx == null && !compact,
+        'pb-2': formItemGapPx == null && compact,
       }"
       class="relative flex"
+      :style="
+        formItemGapPx != null
+          ? {
+              marginBottom: `${formItemGapPx}px`,
+              paddingBottom: '0',
+            }
+          : undefined
+      "
       v-bind="$attrs"
     >
       <FormLabel

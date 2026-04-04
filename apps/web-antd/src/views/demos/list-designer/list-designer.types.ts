@@ -18,6 +18,27 @@ export interface FormSchemaItem {
   };
 }
 
+/** 条件样式运算符（与 queryTableGridEnhance 一致） */
+export type ListDesignerConditionalOp =
+  | 'eq'
+  | 'ne'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'contains'
+  | 'empty'
+  | 'notEmpty';
+
+/** 单列条件着色规则 */
+export interface GridColumnConditionalStyle {
+  op: ListDesignerConditionalOp;
+  value?: string | number | boolean | null;
+  backgroundColor: string;
+  /** cell=仅该列单元格；row=整行 */
+  scope: 'cell' | 'row';
+}
+
 /** 表格列项 */
 export interface GridColumnItem {
   type?: 'checkbox' | 'seq' | 'expand';
@@ -26,6 +47,19 @@ export interface GridColumnItem {
   width?: number;
   minWidth?: number;
   sortable?: boolean;
+  /**
+   * 列顺序（越小越靠前）。未设置时按当前数组顺序渲染/保存。
+   * 仅对普通列生效（type 列忽略）。
+   */
+  order?: number;
+  /** false 时列表不显示该列，行数据仍含该字段（如编辑用 FID） */
+  visible?: boolean;
+  /** 满足条件时设置背景色（可多条，先匹配先生效） */
+  conditionalStyles?: GridColumnConditionalStyle[];
+  /** 非空 hrefTemplate 时该列渲染为链接，支持 {字段名} 占位 */
+  hyperlink?: { hrefTemplate: string; openInNewTab?: boolean };
+  /** Vxe 列汇总：与原生 aggFunc 一致 */
+  aggFunc?: 'sum' | 'count' | 'avg' | 'min' | 'max' | 'first' | 'last';
 }
 
 /** 工具栏按钮项 */
@@ -66,8 +100,35 @@ export function createDefaultGridColumn(index: number): GridColumnItem {
     field: `col_${index}`,
     title: `列${index}`,
     sortable: true,
+    visible: true,
+    order: index,
+    conditionalStyles: [],
+    hyperlink: { hrefTemplate: '', openInNewTab: false },
   };
 }
+
+export const CONDITIONAL_OP_OPTIONS: { value: ListDesignerConditionalOp; label: string }[] = [
+  { value: 'eq', label: '等于' },
+  { value: 'ne', label: '不等于' },
+  { value: 'gt', label: '大于' },
+  { value: 'gte', label: '大于等于' },
+  { value: 'lt', label: '小于' },
+  { value: 'lte', label: '小于等于' },
+  { value: 'contains', label: '包含文本' },
+  { value: 'empty', label: '为空' },
+  { value: 'notEmpty', label: '非空' },
+];
+
+export const COLUMN_AGG_OPTIONS: {
+  value: NonNullable<GridColumnItem['aggFunc']>;
+  label: string;
+}[] = [
+  { value: 'sum', label: '求和' },
+  { value: 'avg', label: '平均' },
+  { value: 'min', label: '最小' },
+  { value: 'max', label: '最大' },
+  { value: 'count', label: '计数' },
+];
 
 /** 创建默认工具栏按钮（仅自定义按钮，删除/导出由 QueryTable 内置，无需配置） */
 export function createDefaultToolbarAction(index: number): ToolbarActionItem {

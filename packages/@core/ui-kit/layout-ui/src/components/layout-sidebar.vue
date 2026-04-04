@@ -192,7 +192,12 @@ const collapseStyle = computed((): CSSProperties => {
 });
 
 watchEffect(() => {
-  extraVisible.value = props.fixedExtra ? true : extraVisible.value;
+  // fixedExtra（当前由 expandOnHover 驱动）时，不要无条件强制 extraVisible=true；
+  // 否则当 extra 菜单为空时仍会保留一条空白竖栏。
+  // 仅在 extraVisible 尚未被上层计算赋值时，给一个默认值 true。
+  if (props.fixedExtra && extraVisible.value === undefined) {
+    extraVisible.value = true;
+  }
 });
 
 function calcMenuWidthStyle(isHiddenDom: boolean): CSSProperties {

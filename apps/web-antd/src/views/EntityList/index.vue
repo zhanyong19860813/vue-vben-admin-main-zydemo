@@ -185,6 +185,7 @@ function openFormOnlyModal( type: 'add' | 'edit',gridApi: any) {
 }
 </script>
 <template>
+  <div class="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
  <QueryTable :schema="currentSchema">
   <template #toolbar-tools="{ gridApi }">
     <Button @click="handleAdd">新增code</Button>
@@ -207,7 +208,6 @@ function openFormOnlyModal( type: 'add' | 'edit',gridApi: any) {
     </FormOnlyModal> 
   </template>
 </QueryTable>
-
-  
+  </div>
 
 </template>   

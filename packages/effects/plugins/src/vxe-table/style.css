@@ -49,7 +49,7 @@
   --vxe-ui-font-primary-lighten-color: hsl(var(--primary) / 60%);
   --vxe-ui-font-primary-darken-color: hsl(var(--primary));
 
-  height: auto !important;
+  /* 勿写 height:auto !important：会盖掉 gridOptions.height，表头无法固定、表体无法内部滚动 */
 
   /* --vxe-ui-table-fixed-scrolling-box-shadow-color: rgb(0 0 0 / 80%); */
 }

@@ -302,6 +302,10 @@ export interface FormRenderProps<
    */
   compact?: boolean;
   /**
+   * 表单项（FormItem）底部间距（px）。设置时覆盖 compact 下的 pb-2 / 默认 pb-4，便于设计器 JSON 精确控制行距（不依赖 Tailwind 扫描 DB 中的 class）
+   */
+  formItemGapPx?: number;
+  /**
    * 组件v-model事件绑定
    */
   componentBindEventMap?: Partial<Record<BaseFormComponentType, string>>;

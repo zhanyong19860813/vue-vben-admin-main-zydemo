@@ -106,9 +106,8 @@ function useExtraMenu(useRootMenus?: ComputedRef<MenuRecordRaw[]>) {
     if (rootMenuPath) defaultSubMap.set(rootMenuPath, currentPath);
     extraActiveMenu.value = rootMenuPath ?? findMenu?.path ?? '';
     extraMenus.value = rootMenu?.children ?? [];
-    if (preferences.sidebar.expandOnHover) {
-      sidebarExtraVisible.value = extraMenus.value.length > 0;
-    }
+    // 始终用当前 extraMenus 同步可见性，避免出现「visible=true 但 menus=[]」导致空白栏
+    sidebarExtraVisible.value = extraMenus.value.length > 0;
   }
 
   watch(

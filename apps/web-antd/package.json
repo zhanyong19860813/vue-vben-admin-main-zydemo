@@ -26,6 +26,9 @@
     "#/*": "./src/*"
   },
   "dependencies": {
+    "axios": "catalog:",
+    "@logicflow/core": "^2.1.11",
+    "@logicflow/extension": "^2.1.15",
     "@vben/access": "workspace:*",
     "@vben/common-ui": "workspace:*",
     "@vben/constants": "workspace:*",

@@ -267,7 +267,7 @@ async function openFormOnlyModal(type: 'add' | 'edit', gridApi: any) {
 }
 </script>
 <template>
-
+  <div class="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
   <QueryTable v-if="schema" :schema="schema" :loading="isLoading">
     <template #toolbar-tools="{ gridApi }">
       <Button type="primary" @click="openFormOnlyModal('add', gridApi)">
@@ -283,4 +283,5 @@ async function openFormOnlyModal(type: 'add' | 'edit', gridApi: any) {
       </FormOnlyModal>
     </template>
   </QueryTable>
+  </div>
 </template>

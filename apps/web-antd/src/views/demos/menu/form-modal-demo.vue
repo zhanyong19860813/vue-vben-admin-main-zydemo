@@ -120,6 +120,7 @@ const [Form, formApi] = useVbenForm({
       fieldName: 'component',
       label: '组件',
       rules: 'required',
+      defaultValue: '/EntityList/entityListFromDesigner',
     },
     {
       component: 'Input',
@@ -159,7 +160,7 @@ const [Form, formApi] = useVbenForm({
       fieldName: 'meta',
       label: 'meta',
       rules: 'required',
-      defaultValue: `{"title": "菜单名称","query": {"menuid": "${menuid}"}}`,
+      defaultValue: `{"title": "菜单名称","query": {"menuid": "${menuid}","entityname": ""}}`,
     },
   ],
   showDefaultActions: false,
@@ -290,7 +291,7 @@ const [ModalF, modalApi] = useVbenModal({
       menuid = crypto.randomUUID();
       formApi.setValues({
         id: menuid,
-        meta: `{"title": "菜单名称","query": {"menuid": "${menuid}"}}`
+        meta: `{"title": "菜单名称","query": {"menuid": "${menuid}","entityname": ""}}`
       });
 
       // 新增模式下，确保表格是空的（可选，因为没 ID 查出来也是空）

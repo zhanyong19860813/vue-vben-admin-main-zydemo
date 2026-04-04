@@ -5,6 +5,26 @@ import type { VbenFormSchema } from '#/adapter/form';
 
 export type FormDesignerSchemaItem = VbenFormSchema;
 
+/**
+ * 控件联动配置（通用）：当本字段变化时，请求接口并将返回结果映射填充到其他表单字段
+ * 例如：选用户 → 带出工号、性别
+ */
+export interface FormLinkageConfig {
+  enabled: boolean;
+  /** 预设（员工等）或自定义 API */
+  type: 'preset' | 'api';
+  /** 预设标识，如 employee = 员工 Lookup */
+  preset?: 'employee';
+  /** 自定义 API 时使用：路径或完整 URL */
+  apiUrl?: string;
+  /** 请求方式 */
+  method?: 'GET' | 'POST';
+  /** 参数来源：表单字段名，其值作为请求参数（不填则用当前字段） */
+  paramKey?: string;
+  /** 接口返回的键 -> 要填充的表单字段名，如 { "code": "工号", "gender": "性别" } */
+  responseMap?: Record<string, string>;
+}
+
 /** 可用的表单组件类型及默认配置 */
 export const FORM_COMPONENT_OPTIONS = [
   {

@@ -27,8 +27,13 @@ export function useExpandable(props: FormRenderProps) {
     for (let index = 1; index <= rows; index++) {
       maxItem += mapping?.[index] ?? 0;
     }
-    // 保持一行
-    return maxItem - 1 || 1;
+    // 尚无行映射（未测量或 grid 未就绪）时须返回 0：form.vue 里用 keepIndex && 判断，0 会关闭「按索引隐藏」，避免 maxItem=0 时算出 -1 把全部表单项都 hidden
+    if (maxItem <= 0) {
+      return 0;
+    }
+    // 保持首行可见项数量：原 maxItem-1||1 在 maxItem=0 时得到 -1（-1 为真值，||1 不生效）会误藏全部字段
+    const lastVisible = maxItem - 1;
+    return lastVisible > 0 ? lastVisible : 1;
   });
 
   watch(

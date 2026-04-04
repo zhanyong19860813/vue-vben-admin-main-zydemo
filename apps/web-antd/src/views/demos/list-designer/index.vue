@@ -13,13 +13,17 @@ import {
   Input,
   InputNumber,
   message,
+  Modal,
   Select,
+  Switch,
   Tabs,
   TreeSelect,
 } from 'ant-design-vue';
 import QueryTable from '#/components/QueryTable/index.vue';
 import type { QueryTableSchema } from '#/components/QueryTable/types';
 import {
+  COLUMN_AGG_OPTIONS,
+  CONDITIONAL_OP_OPTIONS,
   createDefaultFormSchemaItem,
   createDefaultGridColumn,
   FORM_COMPONENT_OPTIONS,
@@ -29,6 +33,13 @@ import {
 } from './list-designer.types';
 import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
+import {
+  dedupeLegacyDatagridByName,
+  guessPrimaryKeyFromLegacy,
+  legacyDatagridRowsToFormSchema,
+  legacyDatagridRowsToGridColumns,
+  type LegacySetDatagridRow,
+} from '#/utils/legacySetDatagridToListDesigner';
 import { companySchema } from '#/views/EntityList/company.schema';
 import { employeeSchema } from '#/views/EntityList/employee.schema';
 
@@ -39,22 +50,164 @@ const code = ref('');
 const savedId = ref<string | null>(null); // 已保存记录的 id，用于更新
 const menuid = ref(''); // 菜单ID，用于加载该菜单下已定义的按钮（vben_menu_actions）
 const title = ref('列表标题');
-const tableName = ref('t_base_table');
+/** 须在后端 DynamicQuerySqlBuilder 白名单内，否则预览区一加载就会 queryforvben 400 */
+const tableName = ref('t_base_company');
 const primaryKey = ref('FID');
-const saveEntityName = ref('');
+const saveEntityName = ref('t_base_company');
 const deleteEntityName = ref('');
 const actionModule = ref('/src/views/EntityList/company.ts');
 
 // ==================== 查询表单 ====================
 const formSchemaList = ref<FormSchemaItem[]>([]);
-const formCollapsed = ref(false);
+const formCollapsed = ref(true);
 const formSubmitOnChange = ref(true);
 
 // ==================== 表格列 ====================
 const gridColumns = ref<GridColumnItem[]>([]);
+
+/** 从已保存的 schema 列配置还原为设计器状态（兼容无 visible 的旧数据） */
+function gridColumnItemFromSchema(c: any): GridColumnItem {
+  if (c.type === 'checkbox' || c.type === 'seq' || c.type === 'expand') {
+    return { type: c.type, width: c.width };
+  }
+  const conditionalStyles = Array.isArray(c.conditionalStyles)
+    ? c.conditionalStyles.map((r: any) => ({
+        op: r.op ?? 'eq',
+        value: r.value,
+        backgroundColor: r.backgroundColor ?? '#fff7e6',
+        scope: r.scope === 'row' ? 'row' : 'cell',
+      }))
+    : [];
+  const ht = c.hyperlink?.hrefTemplate;
+  return {
+    field: c.field,
+    title: c.title,
+    width: c.width,
+    minWidth: c.minWidth,
+    sortable: c.sortable,
+    order: typeof c.order === 'number' ? c.order : undefined,
+    visible: c.visible !== false,
+    conditionalStyles,
+    hyperlink:
+      typeof ht === 'string'
+        ? { hrefTemplate: ht, openInNewTab: !!c.hyperlink?.openInNewTab }
+        : { hrefTemplate: '', openInNewTab: false },
+    aggFunc: c.aggFunc || undefined,
+  };
+}
+
+function normalizeColumnOrders() {
+  // 对普通列：将 order 为空的填充为当前顺序（从 1 开始更直观）
+  let next = 1;
+  gridColumns.value.forEach((c) => {
+    if (c.type) return;
+    if (c.order === undefined || c.order === null || Number.isNaN(Number(c.order))) {
+      c.order = next++;
+    } else {
+      next++;
+    }
+  });
+}
+
+function sortColumnsByOrderInPlace() {
+  // 只排序普通列，checkbox/seq 等 type 列保持在最前面且相对顺序不变
+  const typeCols = gridColumns.value.filter((c) => !!c.type);
+  const normalCols = gridColumns.value
+    .filter((c) => !c.type)
+    .map((c, idx) => ({ c, idx }));
+  normalCols.sort((a, b) => {
+    const ao = a.c.order ?? Number.POSITIVE_INFINITY;
+    const bo = b.c.order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    return a.idx - b.idx;
+  });
+  gridColumns.value = [...typeCols, ...normalCols.map((x) => x.c)];
+}
+
+function moveColumnOrder(index: number, dir: -1 | 1) {
+  const col = gridColumns.value[index];
+  if (!col || col.type) return;
+  normalizeColumnOrders();
+  const targetIdx = index + dir;
+  if (targetIdx < 0 || targetIdx >= gridColumns.value.length) return;
+  const target = gridColumns.value[targetIdx];
+  if (!target || target.type) return;
+  const tmp = col.order;
+  col.order = target.order;
+  target.order = tmp;
+  sortColumnsByOrderInPlace();
+}
+
+function ensureConditionalStyles(col: GridColumnItem) {
+  if (!col.conditionalStyles) col.conditionalStyles = [];
+}
+function addConditionalRule(col: GridColumnItem) {
+  ensureConditionalStyles(col);
+  col.conditionalStyles!.push({
+    op: 'eq',
+    value: '',
+    backgroundColor: '#fff7e6',
+    scope: 'cell',
+  });
+}
+function removeConditionalRule(col: GridColumnItem, idx: number) {
+  col.conditionalStyles?.splice(idx, 1);
+}
+function ruleNeedsValue(op: string) {
+  return op !== 'empty' && op !== 'notEmpty';
+}
+
+const columnMoreOpen = ref(false);
+const columnMoreIndex = ref<number | null>(null);
+const editingColumn = computed(() => {
+  const i = columnMoreIndex.value;
+  if (i === null || i < 0) return null;
+  const c = gridColumns.value[i];
+  if (!c || c.type) return null;
+  return c;
+});
+const columnMoreTitle = computed(() => {
+  const c = editingColumn.value;
+  if (!c) return '列高级设置';
+  return `列高级：${c.title || c.field || '未命名字段'}`;
+});
+
+function openColumnMore(index: number) {
+  const c = gridColumns.value[index];
+  if (!c || c.type) return;
+  columnMoreIndex.value = index;
+  columnMoreOpen.value = true;
+}
+
+function closeColumnMore() {
+  columnMoreOpen.value = false;
+  columnMoreIndex.value = null;
+}
+
+function columnHasAdvancedExtras(col: GridColumnItem): boolean {
+  if (col.type) return false;
+  return !!(
+    col.aggFunc ||
+    (col.hyperlink?.hrefTemplate && col.hyperlink.hrefTemplate.trim()) ||
+    (col.conditionalStyles && col.conditionalStyles.length > 0)
+  );
+}
 const gridPageSize = ref(10);
 const sortField = ref('');
 const sortOrder = ref<'asc' | 'desc'>('asc');
+
+// ==================== 树形表格（Vxe treeConfig） ====================
+const treeEnabled = ref(false);
+/** 平铺数据转树：需要 rowField + parentField */
+const treeTransform = ref(true);
+/** 行主键字段 */
+const treeRowField = ref('id');
+/** 父级字段（平铺转树时使用） */
+const treeParentField = ref('parent_id');
+/** children 字段（后端已返回树结构时使用） */
+const treeChildrenField = ref('children');
+const treeExpandAll = ref(false);
+const treeAccordion = ref(false);
 
 // ==================== 菜单列表（按名称选择） ====================
 interface MenuOption { id: string; name: string; path?: string }
@@ -73,23 +226,62 @@ const apiExport = ref(backendApi('DynamicQueryBeta/ExportExcel'));
 
 // ==================== 构建 Schema ====================
 const designedSchema = computed<QueryTableSchema>(() => {
-  const columns = gridColumns.value.map((c) => {
+  // 保存/预览时按 order 输出（未设置 order 的按当前顺序）
+  const sortedForSchema = [...gridColumns.value].map((c, idx) => ({ c, idx }));
+  sortedForSchema.sort((a, b) => {
+    // type 列永远在最前面
+    const at = !!a.c.type;
+    const bt = !!b.c.type;
+    if (at !== bt) return at ? -1 : 1;
+    if (at && bt) return a.idx - b.idx;
+    const ao = (a.c as any).order ?? Number.POSITIVE_INFINITY;
+    const bo = (b.c as any).order ?? Number.POSITIVE_INFINITY;
+    if (ao !== bo) return ao - bo;
+    return a.idx - b.idx;
+  });
+
+  const columns = sortedForSchema.map(({ c }) => {
     if (c.type === 'checkbox' || c.type === 'seq') {
       return { type: c.type, width: c.width ?? (c.type === 'checkbox' ? 80 : 60) };
     }
-    return {
+    const col: Record<string, any> = {
       field: c.field,
       title: c.title,
       width: c.width,
       minWidth: c.minWidth,
       sortable: c.sortable,
     };
+    if (typeof (c as any).order === 'number') col.order = (c as any).order;
+    if (c.visible === false) col.visible = false;
+    if (c.aggFunc) col.aggFunc = c.aggFunc;
+    if (c.hyperlink?.hrefTemplate?.trim()) {
+      col.hyperlink = {
+        hrefTemplate: c.hyperlink.hrefTemplate.trim(),
+        openInNewTab: !!c.hyperlink.openInNewTab,
+      };
+    }
+    const styles = (c.conditionalStyles ?? []).filter(
+      (r) => r.backgroundColor && (r.scope === 'cell' || r.scope === 'row'),
+    );
+    if (styles.length) col.conditionalStyles = styles;
+    return col;
   });
 
   const sortConfig: any = { remote: true };
   if (sortField.value) {
     sortConfig.defaultSort = { field: sortField.value, order: sortOrder.value };
   }
+
+  const treeConfig: any = treeEnabled.value
+    ? {
+        transform: !!treeTransform.value,
+        rowField: treeRowField.value?.trim() || 'id',
+        parentField: treeParentField.value?.trim() || 'parent_id',
+        children: treeChildrenField.value?.trim() || 'children',
+        expandAll: !!treeExpandAll.value,
+        accordion: !!treeAccordion.value,
+      }
+    : undefined;
 
   const schemaObj: QueryTableSchema & { _menuid?: string } = {
     title: title.value,
@@ -116,6 +308,9 @@ const designedSchema = computed<QueryTableSchema>(() => {
       columns,
       pagerConfig: { enabled: true, pageSize: gridPageSize.value },
       sortConfig,
+      treeConfig,
+      /** vxe 列自定义面板（与 QueryTable 默认一致，也可在 JSON 里设 toolbarConfig.custom: false 关闭） */
+      toolbarConfig: { custom: true },
     },
     api: {
       query: apiQuery.value,
@@ -130,7 +325,7 @@ const designedSchema = computed<QueryTableSchema>(() => {
 // 预览区 key：schema 变更时强制重新挂载 QueryTable，使表格列正确更新
 const previewSchemaKey = computed(
   () =>
-    `${previewRefreshKey.value}_${tableName.value}_${gridColumns.value.length}_${gridColumns.value.map((c) => c.field ?? c.type ?? '').join(',')}`,
+    `${previewRefreshKey.value}_${tableName.value}_${gridColumns.value.length}_${treeEnabled.value ? 1 : 0}_${treeTransform.value ? 1 : 0}_${treeRowField.value}_${treeParentField.value}_${treeChildrenField.value}_${treeExpandAll.value ? 1 : 0}_${treeAccordion.value ? 1 : 0}_${gridColumns.value.map((c) => JSON.stringify({ f: c.field ?? c.type ?? '', v: c.visible === false ? 0 : 1, a: c.aggFunc ?? '', h: c.hyperlink?.hrefTemplate ?? '', t: c.hyperlink?.openInNewTab ? 1 : 0, cs: c.conditionalStyles ?? [] })).join('|')}`,
 );
 const previewRefreshKey = ref(0);
 const queryTableRef = ref<{ gridApi?: { reload?: () => void } } | null>(null);
@@ -170,6 +365,15 @@ function addSeqColumn() {
   message.success('已添加序号列');
 }
 function removeGridColumn(index: number) {
+  if (columnMoreOpen.value && columnMoreIndex.value === index) {
+    closeColumnMore();
+  } else if (
+    columnMoreOpen.value &&
+    columnMoreIndex.value !== null &&
+    index < columnMoreIndex.value
+  ) {
+    columnMoreIndex.value -= 1;
+  }
   gridColumns.value.splice(index, 1);
 }
 
@@ -193,10 +397,14 @@ async function loadColumnsFromTable() {
       message.warning('该表/视图没有列或表名不存在');
       return;
     }
-    gridColumns.value = list.map((col: { columnName: string }) => ({
+    gridColumns.value = list.map((col: { columnName: string }, idx: number) => ({
       field: col.columnName,
       title: col.columnName,
       sortable: true,
+      order: idx + 1,
+      visible: true,
+      conditionalStyles: [] as NonNullable<GridColumnItem['conditionalStyles']>,
+      hyperlink: { hrefTemplate: '', openInNewTab: false },
     }));
     message.success(`已加载 ${list.length} 列，可在「表格列」中修改列名`);
   } catch (e: any) {
@@ -204,6 +412,60 @@ async function loadColumnsFromTable() {
     message.error(msg);
   } finally {
     loadingTableColumns.value = false;
+  }
+}
+
+// ==================== 从老系统 t_set_datagrid 导入列 / 查询项 ====================
+const loadingLegacyDatagrid = ref(false);
+async function importFromLegacyDatagrid() {
+  const entity = tableName.value?.trim();
+  if (!entity) {
+    message.warning('请先填写表名 (tableName)，须与老系统 t_set_datagrid.entity 一致');
+    return;
+  }
+  loadingLegacyDatagrid.value = true;
+  try {
+    const res = await requestClient.post<{ items: any[] }>(
+      backendApi('DynamicQueryBeta/queryforvben'),
+      {
+        TableName: 't_set_datagrid',
+        Page: 1,
+        PageSize: 500,
+        SortBy: 'sort',
+        SortOrder: 'asc',
+        SimpleWhere: { entity },
+      },
+    );
+    const rawItems = res?.items ?? [];
+    if (!rawItems.length) {
+      message.warning(`未找到 entity=${entity} 的列配置，请核对与老系统是否一致`);
+      return;
+    }
+    const rows = rawItems as LegacySetDatagridRow[];
+    gridColumns.value = legacyDatagridRowsToGridColumns(rows).map((c, idx) => ({
+      ...c,
+      order: c.type ? undefined : (typeof (c as any).order === 'number' ? (c as any).order : idx + 1),
+    }));
+    const formFromLegacy = legacyDatagridRowsToFormSchema(rows);
+    if (formFromLegacy.length) {
+      formSchemaList.value = formFromLegacy;
+    } else {
+      message.info('老系统未标记查询列 (is_query)，仅导入表格列；可手工添加查询项');
+    }
+    primaryKey.value = guessPrimaryKeyFromLegacy(rows);
+    if (!saveEntityName.value?.trim()) {
+      saveEntityName.value = entity;
+    }
+    if (!code.value?.trim()) {
+      const safe = entity.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^_|_$/g, '') || 'legacy';
+      code.value = `legacy_${safe}`.slice(0, 80);
+    }
+    message.success(`已从老系统导入 ${dedupeLegacyDatagridByName(rows).length} 个数据列`);
+    refreshPreview();
+  } catch (e: any) {
+    message.error(e?.message || '从 t_set_datagrid 加载失败');
+  } finally {
+    loadingLegacyDatagrid.value = false;
   }
 }
 
@@ -426,20 +688,11 @@ function loadTemplate(name: 'company' | 'employee') {
     label: s.label ?? '',
     componentProps: s.componentProps ? { ...s.componentProps } : undefined,
   }));
-  formCollapsed.value = schema.form?.collapsed ?? false;
+  formCollapsed.value = schema.form?.collapsed ?? true;
   formSubmitOnChange.value = schema.form?.submitOnChange ?? true;
 
   const cols = schema.grid?.columns ?? [];
-  gridColumns.value = cols.map((c: any) => {
-    if (c.type) return { type: c.type, width: c.width };
-    return {
-      field: c.field,
-      title: c.title,
-      width: c.width,
-      minWidth: c.minWidth,
-      sortable: c.sortable,
-    };
-  });
+  gridColumns.value = cols.map((c: any) => gridColumnItemFromSchema(c));
   gridPageSize.value = schema.grid?.pagerConfig?.pageSize ?? 10;
   const defaultSort = schema.grid?.sortConfig?.defaultSort;
   sortField.value = defaultSort?.field ?? '';
@@ -535,24 +788,24 @@ function onSelectSavedConfig(value: string) {
       label: s.label ?? '',
       componentProps: s.componentProps ? { ...s.componentProps } : undefined,
     }));
-    formCollapsed.value = parsed.form?.collapsed ?? false;
+    formCollapsed.value = parsed.form?.collapsed ?? true;
     formSubmitOnChange.value = parsed.form?.submitOnChange ?? true;
 
     const cols = parsed.grid?.columns ?? [];
-    gridColumns.value = cols.map((c: any) => {
-      if (c.type) return { type: c.type, width: c.width };
-      return {
-        field: c.field,
-        title: c.title,
-        width: c.width,
-        minWidth: c.minWidth,
-        sortable: c.sortable,
-      };
-    });
+    gridColumns.value = cols.map((c: any) => gridColumnItemFromSchema(c));
     gridPageSize.value = parsed.grid?.pagerConfig?.pageSize ?? 10;
     const defaultSort = parsed.grid?.sortConfig?.defaultSort;
     sortField.value = defaultSort?.field ?? '';
     sortOrder.value = defaultSort?.order ?? 'asc';
+
+    const tc: any = (parsed.grid as any)?.treeConfig;
+    treeEnabled.value = !!tc;
+    treeTransform.value = tc?.transform !== false;
+    treeRowField.value = tc?.rowField ?? 'id';
+    treeParentField.value = tc?.parentField ?? 'parent_id';
+    treeChildrenField.value = tc?.children ?? 'children';
+    treeExpandAll.value = !!tc?.expandAll;
+    treeAccordion.value = !!tc?.accordion;
 
     toolbarActions.value = (parsed.toolbar?.actions ?? []).map((a: any) => ({
       key: a.key,
@@ -604,24 +857,24 @@ function importJson() {
       label: s.label ?? '',
       componentProps: s.componentProps ? { ...s.componentProps } : undefined,
     }));
-    formCollapsed.value = parsed.form?.collapsed ?? false;
+    formCollapsed.value = parsed.form?.collapsed ?? true;
     formSubmitOnChange.value = parsed.form?.submitOnChange ?? true;
 
     const cols = parsed.grid?.columns ?? [];
-    gridColumns.value = cols.map((c: any) => {
-      if (c.type) return { type: c.type, width: c.width };
-      return {
-        field: c.field,
-        title: c.title,
-        width: c.width,
-        minWidth: c.minWidth,
-        sortable: c.sortable,
-      };
-    });
+    gridColumns.value = cols.map((c: any) => gridColumnItemFromSchema(c));
     gridPageSize.value = parsed.grid?.pagerConfig?.pageSize ?? 10;
     const defaultSort = parsed.grid?.sortConfig?.defaultSort;
     sortField.value = defaultSort?.field ?? '';
     sortOrder.value = defaultSort?.order ?? 'asc';
+
+    const tc: any = (parsed.grid as any)?.treeConfig;
+    treeEnabled.value = !!tc;
+    treeTransform.value = tc?.transform !== false;
+    treeRowField.value = tc?.rowField ?? 'id';
+    treeParentField.value = tc?.parentField ?? 'parent_id';
+    treeChildrenField.value = tc?.children ?? 'children';
+    treeExpandAll.value = !!tc?.expandAll;
+    treeAccordion.value = !!tc?.accordion;
 
     toolbarActions.value = (parsed.toolbar?.actions ?? []).map((a: any) => ({
       key: a.key,
@@ -647,18 +900,25 @@ function clearAll() {
   savedId.value = null;
   menuid.value = '';
   title.value = '列表标题';
-  tableName.value = 't_base_table';
+  tableName.value = 't_base_company';
   primaryKey.value = 'FID';
-  saveEntityName.value = '';
+  saveEntityName.value = 't_base_company';
   deleteEntityName.value = '';
   actionModule.value = '/src/views/EntityList/company.ts';
   formSchemaList.value = [];
-  formCollapsed.value = false;
+  formCollapsed.value = true;
   formSubmitOnChange.value = true;
   gridColumns.value = [];
   gridPageSize.value = 10;
   sortField.value = '';
   sortOrder.value = 'asc';
+  treeEnabled.value = false;
+  treeTransform.value = true;
+  treeRowField.value = 'id';
+  treeParentField.value = 'parent_id';
+  treeChildrenField.value = 'children';
+  treeExpandAll.value = false;
+  treeAccordion.value = false;
   toolbarActions.value = [];
   apiQuery.value = backendApi('DynamicQueryBeta/queryforvben');
   apiDelete.value = backendApi('DataBatchDelete/BatchDelete');
@@ -735,8 +995,13 @@ async function saveToDb() {
             </div>
           </template>
           <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <Tabs class="list-designer-tabs flex-1 min-h-0 overflow-hidden" size="small" type="card">
-            <Tabs.TabPane key="basic" tab="基础与查询">
+          <Tabs
+            class="list-designer-tabs flex-1 min-h-0 overflow-hidden"
+            size="small"
+            type="card"
+            :destroy-inactive-tab-pane="false"
+          >
+            <Tabs.TabPane key="basic" tab="基础与查询" :force-render="true">
               <div class="min-h-0 flex-1 overflow-y-auto pr-1">
                 <!-- 基础配置 -->
                 <div class="flex flex-col gap-2">
@@ -783,6 +1048,18 @@ async function saveToDb() {
                     </div>
                     <div class="mt-0.5 text-xs text-muted-foreground">
                       填写表名后失焦或点击按钮，将自动带出「表格列」，只需修改列名即可
+                    </div>
+                    <div class="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="small"
+                        :loading="loadingLegacyDatagrid"
+                        @click="importFromLegacyDatagrid"
+                      >
+                        从老系统 t_set_datagrid 导入
+                      </Button>
+                      <span class="text-xs text-muted-foreground">
+                        表名须与老系统 entity 一致（如 v_att_lst_HolidayCategory）；按列配置生成表格列与查询项
+                      </span>
                     </div>
                   </div>
                   <div>
@@ -910,12 +1187,73 @@ async function saveToDb() {
               </div>
             </Tabs.TabPane>
 
-            <Tabs.TabPane key="grid" tab="表格列">
+            <Tabs.TabPane key="grid" tab="表格列" :force-render="true">
               <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div class="mb-2 rounded border p-2">
+                  <div class="mb-2 flex items-center justify-between">
+                    <span class="text-sm">树形表格</span>
+                    <Switch
+                      size="small"
+                      :checked="treeEnabled"
+                      @update:checked="(v: boolean) => { treeEnabled = v; refreshPreview(); }"
+                    />
+                  </div>
+                  <div v-if="treeEnabled" class="flex flex-col gap-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="text-xs text-muted-foreground whitespace-nowrap">平铺转树(transform)</span>
+                      <Switch
+                        size="small"
+                        :checked="treeTransform"
+                        @update:checked="(v: boolean) => { treeTransform = v; refreshPreview(); }"
+                      />
+                      <span class="text-xs text-muted-foreground whitespace-nowrap">展开全部</span>
+                      <Switch
+                        size="small"
+                        :checked="treeExpandAll"
+                        @update:checked="(v: boolean) => { treeExpandAll = v; refreshPreview(); }"
+                      />
+                      <span class="text-xs text-muted-foreground whitespace-nowrap">手风琴</span>
+                      <Switch
+                        size="small"
+                        :checked="treeAccordion"
+                        @update:checked="(v: boolean) => { treeAccordion = v; refreshPreview(); }"
+                      />
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <Input
+                        v-model:value="treeRowField"
+                        placeholder="rowField (如 id)"
+                        size="small"
+                        class="w-28"
+                        @blur="refreshPreview"
+                      />
+                      <Input
+                        v-model:value="treeParentField"
+                        placeholder="parentField (如 parent_id)"
+                        size="small"
+                        class="w-36"
+                        @blur="refreshPreview"
+                      />
+                      <Input
+                        v-model:value="treeChildrenField"
+                        placeholder="children (如 children)"
+                        size="small"
+                        class="w-28"
+                        @blur="refreshPreview"
+                      />
+                    </div>
+                    <div class="text-xs text-muted-foreground">
+                      transform=true：后端返回平铺数据（含 parentField），前端转树；transform=false：后端需直接返回 children 树结构。
+                    </div>
+                  </div>
+                </div>
                 <div class="mb-2 flex flex-wrap gap-1">
                   <Button size="small" @click="addCheckboxColumn">复选框</Button>
                   <Button size="small" @click="addSeqColumn">序号</Button>
                   <Button size="small" type="primary" @click="addGridColumn">+ 数据列</Button>
+                </div>
+                <div class="text-muted-foreground mb-2 text-xs">
+                  关闭某列「表格显示」后不在列表中展示该列，行数据仍包含该字段（如 FID 供勾选行编辑）。
                 </div>
                 <div v-for="(col, i) in gridColumns" :key="i" class="mb-2 rounded border p-2">
                   <div v-if="col.type" class="flex items-center justify-between">
@@ -926,6 +1264,24 @@ async function saveToDb() {
                     <Input v-model:value="col.field" placeholder="字段" size="small" class="w-24" />
                     <Input v-model:value="col.title" placeholder="标题" size="small" class="w-24" />
                     <InputNumber v-model:value="col.width" placeholder="宽" size="small" class="w-16" :min="60" />
+                    <InputNumber
+                      v-model:value="col.order"
+                      placeholder="序"
+                      size="small"
+                      class="w-14"
+                      :min="1"
+                      :precision="0"
+                      @blur="() => { sortColumnsByOrderInPlace(); }"
+                    />
+                    <Button size="small" class="px-1" @click="moveColumnOrder(i, -1)" :disabled="i === 0">↑</Button>
+                    <Button
+                      size="small"
+                      class="px-1"
+                      @click="moveColumnOrder(i, 1)"
+                      :disabled="i === gridColumns.length - 1"
+                    >
+                      ↓
+                    </Button>
                     <Select
                       v-model:value="col.sortable"
                       :options="[{ label: '可排序', value: true }, { label: '否', value: false }]"
@@ -933,13 +1289,25 @@ async function saveToDb() {
                       class="w-20"
                       allow-clear
                     />
+                    <span class="inline-flex shrink-0 items-center gap-1 text-xs whitespace-nowrap">
+                      <Switch
+                        size="small"
+                        :checked="col.visible !== false"
+                        @update:checked="(v: boolean) => { col.visible = v; }"
+                      />
+                      表格显示
+                    </span>
+                    <Button size="small" type="link" class="px-1" @click="openColumnMore(i)">
+                      更多
+                      <span v-if="columnHasAdvancedExtras(col)" class="text-muted-foreground">（已配置）</span>
+                    </Button>
                     <Button danger size="small" @click="removeGridColumn(i)">×</Button>
                   </div>
                 </div>
               </div>
             </Tabs.TabPane>
 
-            <Tabs.TabPane key="toolbar" tab="工具栏">
+            <Tabs.TabPane key="toolbar" tab="工具栏" :force-render="true">
               <div class="min-h-0 flex-1 overflow-y-auto pr-1">
                 <div class="mb-2 text-xs text-muted-foreground">
                   从「基础与查询」选择所属菜单后，下方展示该菜单已定义的按钮，点击添加。删除/导出由列表内置。
@@ -1002,7 +1370,7 @@ async function saveToDb() {
               </div>
             </Tabs.TabPane>
 
-            <Tabs.TabPane key="api" tab="分页与API">
+            <Tabs.TabPane key="api" tab="分页与API" :force-render="true">
               <div class="min-h-0 flex-1 overflow-y-auto pr-1">
                 <div class="mb-3 flex flex-col gap-2">
                   <div>
@@ -1058,12 +1426,13 @@ async function saveToDb() {
               <Button size="small" type="link" @click="refreshPreview">刷新</Button>
             </div>
           </template>
-          <div class="min-h-[400px] flex-1 rounded border border-dashed p-4">
+          <div class="flex min-h-0 flex-1 flex-col rounded border border-dashed p-4">
             <QueryTable
               v-if="tableName && apiQuery"
               ref="queryTableRef"
               :key="previewSchemaKey"
               :schema="designedSchema"
+              fill-viewport-height
             />
             <div v-else class="flex h-[300px] items-center justify-center text-muted-foreground">
               请配置表名和查询 API 后预览
@@ -1085,6 +1454,105 @@ async function saveToDb() {
           <Button size="small" @click="exportJson">导出 JSON</Button>
         </div>
       </Card>
+
+      <Modal
+        v-model:open="columnMoreOpen"
+        :title="columnMoreTitle"
+        width="560"
+        ok-text="完成"
+        cancel-text="取消"
+        :destroy-on-close="false"
+        @ok="closeColumnMore"
+        @cancel="closeColumnMore"
+      >
+        <div v-if="editingColumn" class="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1 text-sm">
+          <div>
+            <div class="mb-1 text-xs font-medium text-muted-foreground">页脚汇总（基于当前页已加载数据）</div>
+            <Select
+              v-model:value="editingColumn.aggFunc"
+              placeholder="不汇总"
+              :options="COLUMN_AGG_OPTIONS"
+              size="small"
+              class="w-full max-w-xs"
+              allow-clear
+            />
+          </div>
+          <div class="rounded border border-dashed p-3">
+            <div class="mb-2 text-xs font-medium text-muted-foreground">超链接</div>
+            <div class="flex flex-col gap-2">
+              <Input
+                v-model:value="editingColumn.hyperlink!.hrefTemplate"
+                placeholder="地址模板，如 /detail/{FID} 或 https://a.com?q={Name}"
+                size="small"
+                class="font-mono text-xs"
+              />
+              <span class="inline-flex items-center gap-2 text-xs">
+                <Switch
+                  size="small"
+                  :checked="!!editingColumn.hyperlink?.openInNewTab"
+                  @update:checked="(v: boolean) => { editingColumn.hyperlink!.openInNewTab = v; }"
+                />
+                在新窗口打开
+              </span>
+            </div>
+          </div>
+          <div class="rounded border border-dashed p-3">
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <span class="text-xs font-medium text-muted-foreground">条件着色（依据本列字段值）</span>
+              <Button size="small" type="link" class="h-auto p-0" @click="addConditionalRule(editingColumn)">
+                + 添加规则
+              </Button>
+            </div>
+            <div
+              v-for="(rule, ri) in editingColumn.conditionalStyles || []"
+              :key="ri"
+              class="mb-2 flex flex-wrap items-center gap-1 border-b border-border/60 pb-2 last:mb-0 last:border-0"
+            >
+              <Select
+                v-model:value="rule.op"
+                :options="CONDITIONAL_OP_OPTIONS"
+                size="small"
+                class="w-28"
+              />
+              <Input
+                v-if="ruleNeedsValue(rule.op)"
+                v-model:value="rule.value"
+                placeholder="比较值"
+                size="small"
+                class="w-24 font-mono text-xs"
+              />
+              <input
+                type="color"
+                class="h-7 w-9 cursor-pointer rounded border border-border bg-background p-0"
+                title="背景色"
+                :value="rule.backgroundColor || '#ffffff'"
+                @input="(e: Event) => { rule.backgroundColor = (e.target as HTMLInputElement).value; }"
+              />
+              <Select
+                v-model:value="rule.scope"
+                :options="[{ label: '仅单元格', value: 'cell' }, { label: '整行', value: 'row' }]"
+                size="small"
+                class="w-24"
+              />
+              <Button
+                size="small"
+                type="link"
+                danger
+                class="h-auto p-0"
+                @click="removeConditionalRule(editingColumn, ri)"
+              >
+                移除
+              </Button>
+            </div>
+            <div
+              v-if="!(editingColumn.conditionalStyles && editingColumn.conditionalStyles.length)"
+              class="text-xs text-muted-foreground"
+            >
+              未添加规则。示例：运算符选「等于」、比较值填 1、范围选「整行」，可将状态为 1 的行标色。
+            </div>
+          </div>
+        </div>
+      </Modal>
     </div>
   </Page>
 </template>
