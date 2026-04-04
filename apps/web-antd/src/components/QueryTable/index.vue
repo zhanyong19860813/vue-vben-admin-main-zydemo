@@ -127,6 +127,85 @@ const [Grid, gridApi] = useVbenVxeGrid({
   formOptions: computed(() => resolvedFormOptions.value),
 });
 
+/** 页签打开后等价于点一次「收起」：须在 Grid mount 且注入 formApi 之后再调，成功后才标记完成 */
+let queryFormDefaultCollapsedDone = false;
+let queryFormCollapseRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearQueryFormCollapseRetry() {
+  if (queryFormCollapseRetryTimer != null) {
+    clearTimeout(queryFormCollapseRetryTimer);
+    queryFormCollapseRetryTimer = null;
+  }
+}
+
+function tryApplyQueryFormCollapsed(): boolean {
+  const api = gridApi.formApi as { setState?: (s: Record<string, unknown>) => void } | undefined;
+  if (typeof api?.setState !== 'function') return false;
+  api.setState({ collapsed: true });
+  nextTick(scheduleApplyQueryTableGridHeight);
+  return true;
+}
+
+/** 等当前渲染周期与 VxeGrid 挂载后再试；失败则短时重试，避免过早调用无效 */
+function scheduleQueryFormDefaultCollapse() {
+  if (queryFormDefaultCollapsedDone) return;
+  const schema = resolvedFormOptions.value?.schema;
+  if (!Array.isArray(schema) || schema.length === 0) return;
+
+  clearQueryFormCollapseRetry();
+
+  let attempts = 0;
+  const maxAttempts = 40;
+  const intervalMs = 80;
+
+  const step = () => {
+    if (queryFormDefaultCollapsedDone) {
+      clearQueryFormCollapseRetry();
+      return;
+    }
+    if (tryApplyQueryFormCollapsed()) {
+      queryFormDefaultCollapsedDone = true;
+      clearQueryFormCollapseRetry();
+      return;
+    }
+    attempts++;
+    if (attempts >= maxAttempts) {
+      clearQueryFormCollapseRetry();
+      return;
+    }
+    queryFormCollapseRetryTimer = setTimeout(step, intervalMs);
+  };
+
+  nextTick(() => {
+    nextTick(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            setTimeout(step, 150);
+          }, 0);
+        });
+      });
+    });
+  });
+}
+
+watch(
+  () => props.schema.tableName,
+  () => {
+    queryFormDefaultCollapsedDone = false;
+    clearQueryFormCollapseRetry();
+  },
+);
+
+watch(
+  () => resolvedFormOptions.value?.schema,
+  (schema) => {
+    if (!Array.isArray(schema) || schema.length === 0) return;
+    scheduleQueryFormDefaultCollapse();
+  },
+  { flush: 'post' },
+);
+
 /** 默认按视口自适应高度；grid.fillViewportHeight === false 时用 schema 里的 height/maxHeight */
 const fillViewportEnabled = computed(
   () => (props.schema.grid as Record<string, any> | undefined)?.fillViewportHeight !== false,
@@ -178,12 +257,14 @@ onMounted(() => {
       layoutResizeObserver.observe(layoutRef.value);
     }
     window.addEventListener('resize', scheduleApplyQueryTableGridHeight);
+    scheduleQueryFormDefaultCollapse();
   });
 });
 
 onBeforeUnmount(() => {
   formTabsTableModalInstance?.destroy?.();
   formTabsTableModalInstance = null;
+  clearQueryFormCollapseRetry();
   layoutResizeObserver?.disconnect();
   layoutResizeObserver = null;
   window.removeEventListener('resize', scheduleApplyQueryTableGridHeight);
