@@ -2,6 +2,13 @@
 import type {
   WfAssigneeStrategy,
   WfEdgeConditionRule,
+  WfEdgeFieldType,
+  WfEngineApproveNodeConfig,
+  WfEngineApproveOperatorRow,
+  WfEngineDefinitionModel,
+  WfEngineEdgeModel,
+  WfEngineNodeModel,
+  WfNodeFormBinding,
   WfNodeProperties,
 } from './workflow-definition.schema';
 
@@ -40,6 +47,7 @@ import {
 } from 'ant-design-vue';
 
 import {
+  getWorkflowDefinition,
   publishWorkflowDefinition,
   saveWorkflowDefinition,
 } from '#/api/workflow';
@@ -55,12 +63,89 @@ import {
   WF_SCHEMA_VERSION,
 } from './workflow-definition.schema';
 import WorkflowNodeSettingsModal from './WorkflowNodeSettingsModal.vue';
+import {
+  buildExtFormCode,
+  parseExtFormKeyFromFormCode,
+} from '#/views/workflowExtForm/registry';
 
 import '@logicflow/core/es/style/index.css';
+
+const props = withDefaults(
+  defineProps<{
+    /** 嵌入「流程管理」等页内：高度随容器，不使用整屏 min-height */
+    embedded?: boolean;
+    /**
+     * 嵌入且外层已有「名称/编码/版本」表单时传入，用于同步到保存载荷，并隐藏顶栏左侧重复录入区
+     */
+    metaDraft?: {
+      processCode?: string;
+      processName?: string;
+      processVersion?: number | string;
+    };
+  }>(),
+  { embedded: false, metaDraft: undefined },
+);
+
+/** 供流程管理「节点信息」表格同步（由当前画布解析） */
+interface WfMgmtNodeTableRow {
+  key: string;
+  nodeName: string;
+  nodeType: string;
+  operator: string;
+  formContent: string;
+  formBinding?: WfNodeFormBinding | null;
+}
+
+/** 流程管理「出口条件」：一行对应画布一条连线 */
+interface WfMgmtExitTableRow {
+  key: string;
+  /** 与边 properties.priority 一致：越小越先匹配 */
+  priority: number;
+  selected: boolean;
+  sourceNodeName: string;
+  isReturn: boolean;
+  hasCondition: boolean;
+  extraRulesLabel: string;
+  generateNumber: boolean;
+  exitName: string;
+  targetNodeName: string;
+  exitHint: string;
+}
+
+const emit = defineEmits<{
+  graphDataChange: [rows: WfMgmtNodeTableRow[]];
+  graphExitDataChange: [rows: WfMgmtExitTableRow[]];
+}>();
 
 const processName = ref('请假审批流程（LogicFlow）');
 const processCode = ref('WF_LEAVE_DEMO');
 const processVersion = ref(1);
+
+function applyMetaDraftFromProps() {
+  const d = props.metaDraft;
+  if (!d || !props.embedded) return;
+  if (d.processName !== undefined && d.processName !== null) {
+    const s = String(d.processName).trim();
+    if (s) processName.value = s;
+  }
+  if (d.processCode !== undefined && d.processCode !== null) {
+    const s = String(d.processCode).trim();
+    if (s) processCode.value = s;
+  }
+  if (d.processVersion !== undefined && d.processVersion !== null) {
+    const n = Number(d.processVersion);
+    if (Number.isFinite(n) && n >= 1) processVersion.value = Math.floor(n);
+  }
+}
+
+watch(
+  () => props.metaDraft,
+  () => {
+    applyMetaDraftFromProps();
+  },
+  { deep: true, immediate: true },
+);
+const lastSavedAt = ref('');
 const storageKey = computed(
   () => `workflow-designer-layout:${processCode.value || 'default'}`,
 );
@@ -79,9 +164,29 @@ const selectedAssignee = ref('');
 const selectedDesc = ref('');
 const selectedEdgeCondition = ref('');
 const selectedEdgePriority = ref(0);
+const selectedEdgeIsReturn = ref(false);
+const selectedEdgeName = ref('');
+const selectedEdgeDesc = ref('');
+const edgeRuleOpen = ref(false);
+const edgeHoverTip = ref({
+  desc: '',
+  show: false,
+  x: 0,
+  y: 0,
+});
 /** 多个条件组之间为 OR，组内 rules 为 AND */
 const edgeGroups = ref<{ rules: WfEdgeConditionRule[] }[]>([
-  { rules: [{ scope: 'form', key: '', op: '==', value: '' as any }] },
+  {
+    rules: [
+      {
+        scope: 'form',
+        key: '',
+        fieldType: 'string',
+        op: '==',
+        value: '' as any,
+      },
+    ],
+  },
 ]);
 
 const assigneeStrategyKindOptions = [
@@ -127,6 +232,7 @@ const nodeSettingsInitialName = ref('');
 const nodeSettingsAllNodes = ref<
   { id: string; isPrior?: boolean; label: string }[]
 >([]);
+const showInspector = ref(false);
 
 const countersignModeOptions = [
   { label: '全员通过(all)', value: 'all' },
@@ -160,7 +266,373 @@ const conditionOpOptions = [
   { label: '列表任命中(角色/岗位)', value: 'containsAny' },
 ];
 
+const edgeBetweenOpOptions = [
+  { label: '区间 (between)', value: 'between' },
+  { label: '不在区间 (not_between)', value: 'not_between' },
+] as const;
+
+const edgeFieldTypeOptions: { label: string; value: WfEdgeFieldType }[] = [
+  { label: '文本', value: 'string' },
+  { label: '数字', value: 'number' },
+  { label: '日期', value: 'date' },
+  { label: '布尔', value: 'boolean' },
+];
+
+const edgeBooleanValueOptions = [
+  { label: '是 (true)', value: 'true' },
+  { label: '否 (false)', value: 'false' },
+];
+
+function ruleValueToString(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  if (Array.isArray(v)) return JSON.stringify(v);
+  return String(v);
+}
+
+function getEdgeConditionOpOptions(rule: WfEdgeConditionRule) {
+  const ft: WfEdgeFieldType = rule.fieldType || 'string';
+  if (ft === 'boolean') {
+    return conditionOpOptions.filter(
+      (o) => o.value === '==' || o.value === '!=',
+    );
+  }
+  if (ft === 'string') {
+    return conditionOpOptions.filter((o) =>
+      [
+        '!=',
+        '==',
+        'contains',
+        'containsAny',
+        'endsWith',
+        'in',
+        'notIn',
+        'startsWith',
+      ].includes(String(o.value)),
+    );
+  }
+  return [
+    ...conditionOpOptions.filter((o) =>
+      ['!=', '<', '<=', '==', '>', '>='].includes(String(o.value)),
+    ),
+    ...edgeBetweenOpOptions,
+  ];
+}
+
+function onEdgeFieldTypeChange(rule: WfEdgeConditionRule) {
+  const opts = getEdgeConditionOpOptions(rule);
+  if (!opts.some((o) => o.value === rule.op)) {
+    rule.op = opts[0]!.value as WfEdgeConditionRule['op'];
+  }
+  if (rule.op !== 'between' && rule.op !== 'not_between') {
+    rule.valueTo = undefined;
+  }
+  const ft = rule.fieldType || 'string';
+  if (
+    ft === 'boolean' &&
+    rule.value !== 'true' &&
+    rule.value !== 'false' &&
+    rule.value !== true &&
+    rule.value !== false
+  ) {
+    rule.value = 'true' as any;
+  }
+}
+
+function edgeRuleValueToUi(r: WfEdgeConditionRule): boolean | number | string {
+  const ft = r.fieldType || 'string';
+  if (ft === 'boolean') {
+    if (typeof r.value === 'boolean') return r.value ? 'true' : 'false';
+    return String(r.value);
+  }
+  if (ft === 'number') {
+    if (typeof r.value === 'number' && Number.isFinite(r.value)) return r.value;
+    const n = Number(r.value);
+    return Number.isFinite(n) ? n : (r.value as number);
+  }
+  return ruleValueToString(r.value) as any;
+}
+
+function edgeRuleValueToUiOptional(
+  r: WfEdgeConditionRule,
+): number | string | undefined {
+  if (r.valueTo === undefined || r.valueTo === null) return undefined;
+  if (typeof r.valueTo === 'number' && Number.isFinite(r.valueTo)) {
+    return r.valueTo;
+  }
+  const n = Number(r.valueTo);
+  return Number.isFinite(n) ? n : String(r.valueTo);
+}
+
+function emptyEdgeRule(): WfEdgeConditionRule {
+  return {
+    scope: 'form',
+    key: '',
+    fieldType: 'string',
+    op: '==',
+    value: '' as any,
+  };
+}
+
+function mapStoredEdgeRuleToUi(r: WfEdgeConditionRule): WfEdgeConditionRule {
+  const ft = (r.fieldType as WfEdgeFieldType) || 'string';
+  const merged = { ...r, fieldType: ft };
+  const value = edgeRuleValueToUi(merged) as WfEdgeConditionRule['value'];
+  const valueToUi =
+    r.valueTo !== undefined && r.valueTo !== null
+      ? (edgeRuleValueToUiOptional(merged) as WfEdgeConditionRule['valueTo'])
+      : undefined;
+  return {
+    scope: r.scope || 'form',
+    key: r.key || '',
+    fieldType: ft,
+    op: (r.op || '==') as WfEdgeConditionRule['op'],
+    value,
+    ...(valueToUi === undefined ? {} : { valueTo: valueToUi }),
+  };
+}
+
 let lf: any = null;
+
+function bizTypeToMgmtLabel(biz: string): string {
+  const m: Record<string, string> = {
+    start: '开始',
+    end: '结束',
+    approve: '审批',
+    cc: '抄送',
+    condition: '条件分支',
+  };
+  return m[biz] || (biz ? biz : '节点');
+}
+
+function formatMgmtOperator(props: Record<string, any> | undefined): string {
+  if (!props) return '—';
+  const strategies = Array.isArray(props.assigneeStrategies)
+    ? props.assigneeStrategies
+    : [];
+  const parts = strategies
+    .filter((s: any) => s?.kind)
+    .map((s: any) => String(s.label || s.value || s.kind || '').trim())
+    .filter(Boolean);
+  if (parts.length) return `+ ${parts.join(' / ')}`;
+  const base = String(props.assignee || '').trim();
+  if (base) return `+ ${base}`;
+  return '—';
+}
+
+function formatMgmtFormContent(props: Record<string, any> | undefined): string {
+  if (!props) return '未绑定';
+  const fb = props.formBinding;
+  if (fb && typeof fb === 'object') {
+    const extK =
+      (fb.formSource === 'ext' && String(fb.extFormKey || '').trim()) ||
+      parseExtFormKeyFromFormCode(String(fb.formCode || ''));
+    if (extK) {
+      const nm = String(fb.formName || '').trim();
+      return nm && nm !== extK ? `硬编码 · ${extK}（${nm}）` : `硬编码 · ${extK}`;
+    }
+    const nm = String(fb.formName || '').trim();
+    const code = String(fb.formCode || '').trim();
+    if (nm) return nm;
+    if (code) return code;
+  }
+  const name =
+    props.formName || props.bindFormName || props.formTitle || props.formLabel;
+  const id = props.formId || props.bindFormId;
+  if (name) return String(name);
+  if (id) return `表单 #${id}`;
+  return '未绑定';
+}
+
+function extractBindingFromProps(
+  props: Record<string, any> | undefined,
+): WfNodeFormBinding | null {
+  if (!props) return null;
+  const fb = props.formBinding;
+  if (fb && typeof fb === 'object') {
+    const extKeyDirect =
+      (fb as WfNodeFormBinding).formSource === 'ext' &&
+      String((fb as WfNodeFormBinding).extFormKey || '').trim()
+        ? String((fb as WfNodeFormBinding).extFormKey).trim()
+        : '';
+    const extKeyLegacy = parseExtFormKeyFromFormCode(
+      String((fb as WfNodeFormBinding).formCode || ''),
+    );
+    const extK = extKeyDirect || extKeyLegacy;
+    if (extK) {
+      const name = String((fb as WfNodeFormBinding).formName || '').trim();
+      return {
+        ...(fb as WfNodeFormBinding),
+        formSource: 'ext',
+        extFormKey: extK,
+        formCode: buildExtFormCode(extK),
+        formName: name || extK,
+      };
+    }
+    const code = String((fb as WfNodeFormBinding).formCode || '').trim();
+    const name = String((fb as WfNodeFormBinding).formName || '').trim();
+    if (code || name) {
+      return {
+        ...(fb as WfNodeFormBinding),
+        formCode: code,
+        formName: name || code,
+      };
+    }
+  }
+  const legacyName = String(
+    props.formName || props.bindFormName || props.formTitle || props.formLabel || '',
+  ).trim();
+  const legacyCode = String(props.formCode || props.bindFormCode || '').trim();
+  if (legacyName || legacyCode) {
+    return {
+      formCode: legacyCode,
+      formName: legacyName || legacyCode,
+      fieldRules: {},
+    };
+  }
+  return null;
+}
+
+/** 与 mapFromLfType 一致：无 properties.bizType 时由图形类型推断 */
+function inferBizTypeForMgmt(n: any): string {
+  const p = String(n?.properties?.bizType || '').trim();
+  if (p) return p;
+  const lfType = String(n?.type || '');
+  if (lfType === 'diamond') return 'condition';
+  if (lfType === 'circle') return 'approve';
+  return 'approve';
+}
+
+function parseMgmtNodeTableRows(graphData: {
+  nodes?: any[];
+}): WfMgmtNodeTableRow[] {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  return nodes.map((n: any) => {
+    const id = String(n?.id || '');
+    const textVal =
+      typeof n?.text === 'object' && n?.text !== null && 'value' in n.text
+        ? String((n.text as { value?: string }).value ?? '')
+        : String(n?.text ?? '');
+    const biz = inferBizTypeForMgmt(n);
+    return {
+      key: id || `tmp-${Math.random()}`,
+      nodeName: textVal || id || '未命名',
+      nodeType: bizTypeToMgmtLabel(biz),
+      operator: formatMgmtOperator(n?.properties),
+      formContent: formatMgmtFormContent(n?.properties),
+      formBinding: extractBindingFromProps(n?.properties),
+    };
+  });
+}
+
+function getMgmtNodeTableRowsInternal(): WfMgmtNodeTableRow[] {
+  if (!lf) return [];
+  try {
+    return parseMgmtNodeTableRows(lf.getGraphData?.() ?? { nodes: [] });
+  } catch {
+    return [];
+  }
+}
+
+function nodeTextForMgmt(n: any): string {
+  if (!n) return '';
+  const tv =
+    typeof n?.text === 'object' && n?.text !== null && 'value' in n.text
+      ? String((n.text as { value?: string }).value ?? '')
+      : String(n?.text ?? '');
+  return tv || String(n?.id ?? '');
+}
+
+function edgeHasStructuredCondition(p: Record<string, any> | undefined): boolean {
+  if (!p) return false;
+  if (String(p.condition || '').trim()) return true;
+  if (Array.isArray(p.rules) && p.rules.length > 0) return true;
+  /**
+   * ruleGroups 正常结构：{ anyOf: [{ allOf: [...] }, ...] }
+   * 兼容旧结构：ruleGroups 直接是数组
+   */
+  const rg = p.ruleGroups;
+  if (Array.isArray(rg) && rg.length > 0) return true;
+  if (rg && typeof rg === 'object') {
+    const anyOf = (rg as { anyOf?: unknown }).anyOf;
+    if (Array.isArray(anyOf) && anyOf.length > 0) return true;
+  }
+  return false;
+}
+
+function normalizeEdgePriority(raw: unknown): number {
+  const n = Number(raw);
+  if (Number.isFinite(n)) return Math.trunc(n);
+  return 100;
+}
+
+function parseMgmtExitTableRows(graphData: {
+  nodes?: any[];
+  edges?: any[];
+}): WfMgmtExitTableRow[] {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+  const byId = new Map<string, any>();
+  for (const n of nodes) {
+    const id = String(n?.id || '');
+    if (id) byId.set(id, n);
+  }
+  const indexed = edges.map((e: any, order: number) => ({ e, order }));
+  indexed.sort((a, b) => {
+    const pa = normalizeEdgePriority(a.e?.properties?.priority);
+    const pb = normalizeEdgePriority(b.e?.properties?.priority);
+    if (pa !== pb) return pa - pb;
+    const sa = String(a.e?.sourceNodeId || '');
+    const sb = String(b.e?.sourceNodeId || '');
+    if (sa !== sb) return sa.localeCompare(sb);
+    return a.order - b.order;
+  });
+  return indexed.map(({ e }) => {
+    const id = String(e?.id || '');
+    const sid = String(e?.sourceNodeId || '');
+    const tid = String(e?.targetNodeId || '');
+    const sn = sid ? byId.get(sid) : undefined;
+    const tn = tid ? byId.get(tid) : undefined;
+    const p = (e?.properties || {}) as Record<string, any>;
+    const priority = normalizeEdgePriority(p.priority);
+    const fromText =
+      typeof e?.text === 'object' && e?.text !== null && 'value' in e.text
+        ? String((e.text as { value?: string }).value ?? '').trim()
+        : String(e?.text ?? '').trim();
+    const edgeName = String(p.edgeName || '').trim() || fromText || '—';
+    const edgeDesc = String(p.edgeDesc || '').trim();
+    const isReturn =
+      !!p.isReturn ||
+      edgeName.includes('退回') ||
+      edgeName.includes('驳回');
+    return {
+      key: id || `e-${sid}-${tid}-${Math.random()}`,
+      priority,
+      selected: false,
+      sourceNodeName: nodeTextForMgmt(sn) || sid || '—',
+      isReturn,
+      hasCondition: edgeHasStructuredCondition(p),
+      extraRulesLabel: '—',
+      generateNumber: !!p.generateNumber,
+      exitName: edgeName,
+      targetNodeName: nodeTextForMgmt(tn) || tid || '—',
+      exitHint: edgeDesc,
+    };
+  });
+}
+
+function getMgmtExitTableRowsInternal(): WfMgmtExitTableRow[] {
+  if (!lf) return [];
+  try {
+    return parseMgmtExitTableRows(lf.getGraphData?.() ?? { nodes: [], edges: [] });
+  } catch {
+    return [];
+  }
+}
+
+function emitMgmtRows() {
+  emit('graphDataChange', getMgmtNodeTableRowsInternal());
+  emit('graphExitDataChange', getMgmtExitTableRowsInternal());
+}
 
 /** 适应画布内边距（LogicFlow fitView：上下、左右） */
 const FIT_VIEW_PADDING_V = 40;
@@ -189,7 +661,11 @@ function scheduleFitGraphToView() {
 }
 
 function updateGraphStats() {
-  if (!lf) return;
+  if (!lf) {
+    emit('graphDataChange', []);
+    emit('graphExitDataChange', []);
+    return;
+  }
   try {
     const d = lf.getGraphData?.() ?? { nodes: [], edges: [] };
     graphStats.value = {
@@ -199,6 +675,7 @@ function updateGraphStats() {
   } catch {
     graphStats.value = { nodeCount: 0, edgeCount: 0 };
   }
+  emitMgmtRows();
 }
 
 function zoomIn() {
@@ -245,12 +722,6 @@ function clearCanvas() {
       message.success('已清空画布');
     },
   });
-}
-
-function ruleValueToString(v: unknown): string {
-  if (v === undefined || v === null) return '';
-  if (Array.isArray(v)) return JSON.stringify(v);
-  return String(v);
 }
 
 const nodeTypeOptions = [
@@ -458,11 +929,13 @@ function onNodeSettingsSave(payload: {
     payload.properties.bizType ?? nm?.properties?.bizType ?? 'approve',
   );
   lf.setProperties(payload.nodeId, {
+    ...(nm?.properties || {}),
     ...payload.properties,
     style: nodeStyleFor(biz, lfShape),
   });
   refreshSelectedNodePanel(payload.nodeId);
   message.success('已保存节点设置');
+  emitMgmtRows();
 }
 
 function refreshSelectedNodePanel(nodeId: string) {
@@ -498,10 +971,9 @@ function refreshSelectedNodePanel(nodeId: string) {
 
   selectedEdgeId.value = '';
   selectedEdgeCondition.value = '';
-  edgeGroups.value = [
-    { rules: [{ scope: 'form', key: '', op: '==', value: '' as any }] },
-  ];
+  edgeGroups.value = [{ rules: [emptyEdgeRule()] }];
   selectedEdgePriority.value = 0;
+  selectedEdgeIsReturn.value = false;
 }
 
 function refreshSelectedEdgePanel(edgeId: string) {
@@ -509,25 +981,26 @@ function refreshSelectedEdgePanel(edgeId: string) {
   const edge = lf.getEdgeModelById(edgeId);
   if (!edge) return;
   selectedEdgeId.value = edge.id;
+  selectedEdgeName.value =
+    String(edge.properties?.edgeName || '').trim() ||
+    String(edge.text?.value || '').trim() ||
+    '条件';
+  selectedEdgeDesc.value = String(edge.properties?.edgeDesc || '').trim();
   selectedEdgeCondition.value =
     edge.properties?.condition || edge.text?.value || '';
   selectedEdgePriority.value = Number(edge.properties?.priority ?? 0);
+  selectedEdgeIsReturn.value = !!edge.properties?.isReturn;
   const rg = edge.properties?.ruleGroups as
     | undefined
     | { anyOf?: { allOf: WfEdgeConditionRule[] }[] };
   if (rg?.anyOf?.length) {
     edgeGroups.value = rg.anyOf.map((g) => ({
-      rules: (g.allOf || []).map((r: WfEdgeConditionRule) => ({
-        scope: r.scope || 'form',
-        key: r.key || '',
-        op: r.op || '==',
-        value: ruleValueToString(r.value) as any,
-      })),
+      rules: (g.allOf || []).map((r: WfEdgeConditionRule) =>
+        mapStoredEdgeRuleToUi(r),
+      ),
     }));
     if (edgeGroups.value.length === 0) {
-      edgeGroups.value = [
-        { rules: [{ scope: 'form', key: '', op: '==', value: '' as any }] },
-      ];
+      edgeGroups.value = [{ rules: [emptyEdgeRule()] }];
     }
   } else {
     const rawRules = edge.properties?.rules;
@@ -535,17 +1008,31 @@ function refreshSelectedEdgePanel(edgeId: string) {
       Array.isArray(rawRules) && rawRules.length > 0
         ? [
             {
-              rules: rawRules.map((r: WfEdgeConditionRule) => ({
-                scope: r.scope || 'form',
-                key: r.key || '',
-                op: r.op || '==',
-                value: ruleValueToString(r.value) as any,
-              })),
+              rules: rawRules.map((r: WfEdgeConditionRule) =>
+                mapStoredEdgeRuleToUi(r),
+              ),
             },
           ]
-        : [{ rules: [{ scope: 'form', key: '', op: '==', value: '' as any }] }];
+        : [{ rules: [emptyEdgeRule()] }];
   }
   selectedNodeId.value = '';
+}
+
+function updateEdgeHoverTip(edgeId: string, evt?: any) {
+  if (!lf) return;
+  const edge = lf.getEdgeModelById(edgeId);
+  if (!edge) return;
+  const desc = String(edge.properties?.edgeDesc || '').trim();
+  if (!desc) {
+    edgeHoverTip.value.show = false;
+    return;
+  }
+  edgeHoverTip.value.desc = desc;
+  if (evt?.clientX !== undefined && evt?.clientY !== undefined) {
+    edgeHoverTip.value.x = Number(evt.clientX) + 12;
+    edgeHoverTip.value.y = Number(evt.clientY) + 12;
+  }
+  edgeHoverTip.value.show = true;
 }
 
 function initLogicFlow(data?: any) {
@@ -606,6 +1093,18 @@ function initLogicFlow(data?: any) {
   });
   lf.on('edge:click', ({ data: edgeData }: any) => {
     refreshSelectedEdgePanel(edgeData.id);
+  });
+  lf.on('edge:mouseenter', ({ data, e }: any) => {
+    updateEdgeHoverTip(data.id, e);
+  });
+  lf.on('edge:mousemove', ({ data, e }: any) => {
+    updateEdgeHoverTip(data.id, e);
+  });
+  lf.on('edge:mouseleave', () => {
+    edgeHoverTip.value.show = false;
+  });
+  lf.on('edge:dbclick', ({ data: edgeData }: any) => {
+    openEdgeRuleFromDblClick(edgeData.id);
   });
   lf.on('node:dbclick', ({ data: nodeData }: any) => {
     openNodeSettingsFromDblClick(nodeData.id);
@@ -691,6 +1190,7 @@ function applyNodeProperty() {
     style: nodeStyleFor(String(selectedNodeType.value), lfShape),
   });
   message.success('已更新节点属性');
+  emitMgmtRows();
 }
 
 function parseRuleValue(
@@ -710,21 +1210,112 @@ function parseRuleValue(
   return raw;
 }
 
+function normalizeEdgeRuleForPayload(
+  r: WfEdgeConditionRule,
+): false | WfEdgeConditionRule {
+  const key = r.key.trim();
+  const ft: WfEdgeFieldType = r.fieldType || 'string';
+  const op = r.op;
+
+  if (ft === 'boolean') {
+    const raw = r.value;
+    const b = raw === true || raw === false ? raw : String(raw) === 'true';
+    return {
+      scope: r.scope,
+      key,
+      fieldType: ft,
+      op: op as WfEdgeConditionRule['op'],
+      value: b,
+    };
+  }
+
+  if (ft === 'number') {
+    const n = typeof r.value === 'number' ? r.value : Number(r.value);
+    if (!Number.isFinite(n)) {
+      message.warning(`字段「${key}」请输入有效数字`);
+      return false;
+    }
+    if (op === 'between' || op === 'not_between') {
+      const rawTo = r.valueTo;
+      const m = typeof rawTo === 'number' ? rawTo : Number(rawTo ?? Number.NaN);
+      if (!Number.isFinite(m)) {
+        message.warning(`字段「${key}」请输入有效区间上限`);
+        return false;
+      }
+      return {
+        scope: r.scope,
+        key,
+        fieldType: ft,
+        op,
+        value: n,
+        valueTo: m,
+      };
+    }
+    return {
+      scope: r.scope,
+      key,
+      fieldType: ft,
+      op: op as WfEdgeConditionRule['op'],
+      value: n,
+    };
+  }
+
+  if (ft === 'date') {
+    const from = String(r.value ?? '').trim();
+    if (!from) {
+      message.warning(`字段「${key}」请输入日期`);
+      return false;
+    }
+    if (op === 'between' || op === 'not_between') {
+      const to = String(r.valueTo ?? '').trim();
+      if (!to) {
+        message.warning(`字段「${key}」请输入区间结束日期`);
+        return false;
+      }
+      return {
+        scope: r.scope,
+        key,
+        fieldType: ft,
+        op,
+        value: from,
+        valueTo: to,
+      };
+    }
+    return {
+      scope: r.scope,
+      key,
+      fieldType: ft,
+      op: op as WfEdgeConditionRule['op'],
+      value: from,
+    };
+  }
+
+  const val =
+    typeof r.value === 'string'
+      ? parseRuleValue(r.value)
+      : (r.value as WfEdgeConditionRule['value']);
+  return {
+    scope: r.scope,
+    key,
+    fieldType: 'string',
+    op: op as WfEdgeConditionRule['op'],
+    value: val,
+  };
+}
+
 function applyEdgeCondition() {
   if (!lf || !selectedEdgeId.value) return;
-  const groupsPayload = edgeGroups.value.map((g) =>
-    g.rules
-      .filter((r) => r.key.trim())
-      .map((r) => ({
-        scope: r.scope,
-        key: r.key.trim(),
-        op: r.op,
-        value:
-          typeof r.value === 'string'
-            ? parseRuleValue(r.value)
-            : (r.value as boolean | number | number[] | string | string[]),
-      })),
-  );
+  const groupsPayload: WfEdgeConditionRule[][] = [];
+  for (const g of edgeGroups.value) {
+    const rows: WfEdgeConditionRule[] = [];
+    for (const r of g.rules) {
+      if (!r.key.trim()) continue;
+      const n = normalizeEdgeRuleForPayload(r);
+      if (n === false) return;
+      rows.push(n);
+    }
+    groupsPayload.push(rows);
+  }
   const edgePart = buildEdgeConditionProperties({
     priority: selectedEdgePriority.value,
     groups: groupsPayload,
@@ -734,11 +1325,23 @@ function applyEdgeCondition() {
     summarizeRuleGroups(edgePart.ruleGroups) ||
     summarizeEdgeRules(edgePart.rules?.length ? edgePart.rules : undefined) ||
     selectedEdgeCondition.value.trim();
+  const edgeName = selectedEdgeName.value.trim() || '条件';
+  const edgeDesc = selectedEdgeDesc.value.trim() || summary;
   lf.setProperties(selectedEdgeId.value, {
     ...edgePart,
+    isReturn: selectedEdgeIsReturn.value,
+    edgeDesc,
+    edgeName,
   });
-  lf.updateText(selectedEdgeId.value, summary);
+  lf.updateText(selectedEdgeId.value, edgeName);
+  // 让「流程管理」中的出口条件表格立即拿到最新 hasCondition
+  emitMgmtRows();
   message.success('已更新连线条件');
+}
+
+function onEdgeRuleModalOk() {
+  applyEdgeCondition();
+  edgeRuleOpen.value = false;
 }
 
 function addAssigneeRow() {
@@ -771,6 +1374,11 @@ function onStrategyKindChange(row: WfAssigneeStrategy) {
     row.value = '';
     row.label = '';
   }
+}
+
+function openEdgeRuleFromDblClick(edgeId: string) {
+  refreshSelectedEdgePanel(edgeId);
+  edgeRuleOpen.value = true;
 }
 
 function openPersonPicker(target: { index: number; list: 'assignee' | 'cc' }) {
@@ -869,20 +1477,19 @@ function applyPickedDeptManagers(items: OrgDeptManagerItem[]) {
 function addEdgeRuleRow(groupIndex: number) {
   const g = edgeGroups.value[groupIndex];
   if (!g) return;
-  g.rules.push({ scope: 'form', key: '', op: '==', value: '' as any });
+  g.rules.push(emptyEdgeRule());
 }
 
 function removeEdgeRuleRow(groupIndex: number, ruleIndex: number) {
   const g = edgeGroups.value[groupIndex];
   if (!g) return;
   g.rules.splice(ruleIndex, 1);
-  if (g.rules.length === 0)
-    g.rules.push({ scope: 'form', key: '', op: '==', value: '' as any });
+  if (g.rules.length === 0) g.rules.push(emptyEdgeRule());
 }
 
 function addEdgeGroup() {
   edgeGroups.value.push({
-    rules: [{ scope: 'form', key: '', op: '==', value: '' as any }],
+    rules: [emptyEdgeRule()],
   });
 }
 
@@ -892,13 +1499,131 @@ function removeEdgeGroup(groupIndex: number) {
 }
 
 function buildDefinitionPayload(extra: Record<string, unknown> = {}) {
+  const graphData = lf?.getGraphData?.() ?? { nodes: [], edges: [] };
+  const engineModel = buildEngineModel(graphData);
   return {
     processName: processName.value,
     processCode: processCode.value,
     processVersion: processVersion.value,
     wfMeta: createDefaultWfDefinitionMeta(),
-    graphData: lf?.getGraphData?.() ?? { nodes: [], edges: [] },
+    graphData,
+    engineModel,
     ...extra,
+  };
+}
+
+function mapBizToEngineNodeType(raw: unknown): WfEngineNodeModel['type'] {
+  const biz = String(raw || '').trim();
+  if (biz === 'start') return 'start';
+  if (biz === 'end') return 'end';
+  if (biz === 'condition') return 'condition';
+  if (biz === 'cc') return 'cc';
+  return 'approve';
+}
+
+function buildEngineModel(graphData: any): WfEngineDefinitionModel {
+  const nodesRaw = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edgesRaw = Array.isArray(graphData?.edges) ? graphData.edges : [];
+
+  const nodes: WfEngineNodeModel[] = nodesRaw.map((n: any) => {
+    const type = mapBizToEngineNodeType(n?.properties?.bizType);
+    const props = (n?.properties || {}) as WfNodeProperties;
+    let approveConfig: undefined | WfEngineApproveNodeConfig;
+    if (type === 'approve') {
+      const rowsRaw = Array.isArray(props.approvalOperatorRows)
+        ? props.approvalOperatorRows
+        : [];
+      const rows: WfEngineApproveOperatorRow[] = rowsRaw
+        .map((r: any) => {
+          const attr = String(r?.countersignAttr || '').trim();
+          let signMode: WfEngineApproveOperatorRow['signMode'] = 'any';
+          switch (attr) {
+            case '会签': {
+              signMode = 'all';
+              break;
+            }
+            case '依次': {
+              signMode = 'sequential';
+              break;
+            }
+            case '抄送': {
+              signMode = 'cc';
+              break;
+            }
+          }
+          return {
+            id: r?.id ? String(r.id) : undefined,
+            kind: String(r?.kind || '').trim(),
+            name: String(r?.name || '').trim(),
+            refValue: r?.refValue ? String(r.refValue).trim() : undefined,
+            level: r?.level ? String(r.level).trim() : undefined,
+            batch: Number(r?.batch ?? 0),
+            batchCondition: r?.batchCondition
+              ? String(r.batchCondition).trim()
+              : undefined,
+            signMode,
+          };
+        })
+        .filter((r) => r.kind || r.name)
+        .toSorted((a, b) => a.batch - b.batch);
+      approveConfig = {
+        source: 'approvalOperatorRows',
+        batchMatchPolicy: 'first_matched_stop',
+        sameBatchDispatch: 'parallel',
+        sameBatchDefaultSignMode: 'any',
+        headerConditionText: props.approvalHeaderCondition?.trim() || undefined,
+        headerConditionRules: props.approvalHeaderConditionRules,
+        rows,
+      };
+    }
+    return {
+      id: String(n?.id || ''),
+      name: String(n?.text?.value || n?.text || n?.id || ''),
+      type,
+      properties: props,
+      approveConfig,
+    };
+  });
+
+  const edges: WfEngineEdgeModel[] = edgesRaw
+    .map((e: any) => {
+      const p = (e?.properties || {}) as Record<string, any>;
+      return {
+        id: String(e?.id || ''),
+        sourceNodeId: String(e?.sourceNodeId || ''),
+        targetNodeId: String(e?.targetNodeId || ''),
+        name: String(p.edgeName || e?.text?.value || '').trim() || undefined,
+        desc: String(p.edgeDesc || '').trim() || undefined,
+        priority: Number(p.priority ?? 0),
+        isReturn: !!p.isReturn,
+        ruleGroups: p.ruleGroups,
+        rules: p.rules,
+        condition: String(p.condition || '').trim() || undefined,
+      };
+    })
+    .filter((e) => e.id && e.sourceNodeId && e.targetNodeId)
+    .toSorted((a, b) => a.priority - b.priority);
+
+  const startNode = nodes.find((n) => n.type === 'start');
+  return {
+    startNodeId: startNode?.id,
+    nodes,
+    edges,
+    executionPolicy: {
+      resolverPriority: [
+        'manualIntervention',
+        'approverResolve',
+        'assigneeStrategies',
+        'approvalWeaverUi_view_only',
+      ],
+      sameBatchDefaultSignMode: 'any',
+      batchMatchPolicy: 'first_matched_stop',
+    },
+    // 先落地统一格式，后续可在设计器 UI 里编辑这组规则
+    manualIntervention: {
+      enabled: false,
+      rules: [],
+    },
   };
 }
 
@@ -927,14 +1652,52 @@ function saveLayout() {
 
 async function saveToServer() {
   if (!lf) return;
-  const definitionJson = JSON.stringify(buildDefinitionPayload(), null, 2);
-  const resp = await saveWorkflowDefinition({
-    processCode: processCode.value,
-    processName: processName.value,
-    definitionJson,
-  });
-  processVersion.value = Number(resp?.version ?? processVersion.value);
-  message.success('已保存到后端草稿版本');
+  try {
+    const payload = buildDefinitionPayload();
+    const definitionJson = JSON.stringify(payload, null, 2);
+    const resp = await saveWorkflowDefinition({
+      processCode: processCode.value,
+      processName: processName.value,
+      definitionJson,
+    });
+    processVersion.value = Number(resp?.version ?? processVersion.value);
+    lastSavedAt.value = new Date().toLocaleString();
+    // 保存成功后同步本地，刷新时兜底可恢复
+    jsonText.value = definitionJson;
+    localStorage.setItem(storageKey.value, definitionJson);
+    message.success('已保存到后端草稿版本');
+  } catch (error) {
+    message.error(`保存失败：${(error as Error).message}`);
+  }
+}
+
+async function loadFromServer() {
+  try {
+    const resp = await getWorkflowDefinition(
+      {
+        processCode: processCode.value,
+      },
+      props.embedded ? { skipGlobalErrorMessage: true } : undefined,
+    );
+    const raw = resp?.definitionJson;
+    if (!raw) return false;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!parsed?.graphData?.nodes) return false;
+    processName.value = parsed.processName ?? processName.value;
+    processVersion.value = Number(
+      parsed.processVersion ?? processVersion.value,
+    );
+    lastSavedAt.value = String(parsed.savedAt || parsed.exportedAt || '');
+    ensureGraphNodeStyles(parsed.graphData);
+    lf?.render(parsed.graphData);
+    scheduleFitGraphToView();
+    updateGraphStats();
+    jsonText.value = JSON.stringify(parsed, null, 2);
+    localStorage.setItem(storageKey.value, jsonText.value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function loadSavedLayout() {
@@ -946,6 +1709,7 @@ function loadSavedLayout() {
     processVersion.value = Number(
       parsed.processVersion ?? processVersion.value,
     );
+    lastSavedAt.value = String(parsed.savedAt || parsed.exportedAt || '');
     if (parsed?.graphData?.nodes) {
       ensureGraphNodeStyles(parsed.graphData);
       lf?.render(parsed.graphData);
@@ -1003,22 +1767,161 @@ watch(isFullscreen, () => {
   });
 });
 
-onMounted(() => {
+onMounted(async () => {
+  /* 嵌入流程管理时，父级 Tabs 首帧高度常为 0，推迟到布局后再 init 避免画布空白 */
+  if (props.embedded) {
+    await nextTick();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  }
   initLogicFlow();
-  loadSavedLayout();
+  const loaded = await loadFromServer();
+  if (!loaded) loadSavedLayout();
 });
 
 onBeforeUnmount(() => {
   lf?.destroy();
   lf = null;
 });
+
+function resizeToParent() {
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      if (!lf) return;
+      lf.resize?.();
+      scheduleFitGraphToView();
+    });
+  });
+}
+
+function getMgmtNodeTableRows(): WfMgmtNodeTableRow[] {
+  return getMgmtNodeTableRowsInternal();
+}
+
+function getMgmtExitTableRows(): WfMgmtExitTableRow[] {
+  return getMgmtExitTableRowsInternal();
+}
+
+function getNodeFormBinding(nodeId: string): WfNodeFormBinding | null {
+  if (!lf) return null;
+  try {
+    const nm = lf.getNodeModelById(nodeId);
+    return extractBindingFromProps((nm?.properties || {}) as Record<string, any>);
+  } catch {
+    return null;
+  }
+}
+
+/** 供流程管理「保存到本地」：整包 definition 快照（与 saveToServer 同源结构） */
+function getWorkflowDraftSnapshot(): Record<string, unknown> {
+  return buildDefinitionPayload({
+    savedAt: new Date().toISOString(),
+    savedFrom: 'workflow-process-mgmt',
+  }) as Record<string, unknown>;
+}
+
+/** 从本地草稿恢复画布与流程标识（不请求后端） */
+function applyWorkflowDraftFromObject(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed || !lf) return false;
+  try {
+    if (parsed.processName != null) {
+      processName.value = String(parsed.processName);
+    }
+    if (parsed.processCode != null) {
+      processCode.value = String(parsed.processCode);
+    }
+    if (parsed.processVersion != null) {
+      const n = Number(parsed.processVersion);
+      if (Number.isFinite(n) && n >= 1) processVersion.value = Math.floor(n);
+    }
+    const gd = parsed.graphData as { nodes?: unknown[] } | undefined;
+    if (gd?.nodes) {
+      ensureGraphNodeStyles(gd);
+      lf.render(gd);
+      scheduleFitGraphToView();
+      updateGraphStats();
+    }
+    jsonText.value = JSON.stringify(parsed, null, 2);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function applyNodeFormBinding(
+  nodeId: string,
+  binding: WfNodeFormBinding | null,
+): boolean {
+  if (!lf) return false;
+  try {
+    const nm = lf.getNodeModelById(nodeId);
+    if (!nm) return false;
+    const prev = { ...(nm.properties || {}) } as Record<string, any>;
+    if (binding === null) {
+      delete prev.formBinding;
+    } else {
+      prev.formBinding = binding;
+    }
+    const biz = String(prev.bizType || mapFromLfType(String(nm.type)));
+    const lfShape = nm?.type ? String(nm.type) : 'rect';
+    lf.setProperties(nodeId, {
+      ...prev,
+      style: nodeStyleFor(biz, lfShape),
+    });
+    updateGraphStats();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 与流程引擎边 priority 一致：越小越先匹配出口条件 */
+function applyEdgePriority(edgeId: string, priority: number): boolean {
+  if (!lf) return false;
+  const id = String(edgeId || '').trim();
+  if (!id) return false;
+  try {
+    const em = lf.getEdgeModelById(id);
+    if (!em) return false;
+    const prev = { ...(em.properties || {}) } as Record<string, any>;
+    const n = Math.trunc(Number(priority));
+    const safe = Number.isFinite(n) ? Math.min(99_999, Math.max(0, n)) : 100;
+    lf.setProperties(id, {
+      ...prev,
+      priority: safe,
+    });
+    emitMgmtRows();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+defineExpose({
+  resizeToParent,
+  getMgmtNodeTableRows,
+  getMgmtExitTableRows,
+  openNodeSettingsFromDblClick,
+  openEdgeRuleFromDblClick,
+  getNodeFormBinding,
+  applyNodeFormBinding,
+  applyEdgePriority,
+  getWorkflowDraftSnapshot,
+  applyWorkflowDraftFromObject,
+});
 </script>
 
 <template>
-  <div class="wf-designer-root">
+  <div
+    class="wf-designer-root"
+    :class="{ 'wf-designer-root--embedded': props.embedded }"
+  >
     <div ref="studioRef" class="wf-studio">
-      <!-- 顶栏：流程标识 + 主要操作 -->
-      <header class="wf-topbar">
+      <!-- 顶栏：独立设计器页用；嵌入流程管理时由外层「保存到数据库 / 发布」等承担，不再重复 -->
+      <header v-if="!props.embedded" class="wf-topbar">
         <div class="wf-topbar-left">
           <span class="wf-pipe"></span>
           <div class="wf-title-block">
@@ -1046,6 +1949,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <Space wrap class="wf-topbar-right" :size="8">
+          <span class="wf-save-status">
+            版本 v{{ processVersion }} ·
+            {{ lastSavedAt ? `最近保存：${lastSavedAt}` : '未保存' }}
+          </span>
           <Button type="primary" @click="saveToServer">保存到后端</Button>
           <Button @click="publishFlow">发布流程</Button>
           <Button type="primary" ghost @click="exportCurrentJson">
@@ -1108,7 +2015,10 @@ onBeforeUnmount(() => {
         </Space>
       </div>
 
-      <div class="wf-main">
+      <div
+        class="wf-main"
+        :class="[{ 'wf-main--no-inspector': !showInspector }]"
+      >
         <!-- 左侧节点库 -->
         <aside class="wf-palette">
           <div class="wf-palette-title">节点库</div>
@@ -1184,10 +2094,17 @@ onBeforeUnmount(() => {
         <!-- 中间画布 -->
         <main class="wf-canvas-panel">
           <div ref="canvasRef" class="lf-canvas"></div>
+          <div
+            v-if="edgeHoverTip.show"
+            class="wf-edge-hover-tip"
+            :style="{ left: `${edgeHoverTip.x}px`, top: `${edgeHoverTip.y}px` }"
+          >
+            {{ edgeHoverTip.desc }}
+          </div>
         </main>
 
         <!-- 右侧属性 -->
-        <aside class="wf-inspector">
+        <aside v-if="showInspector" class="wf-inspector">
           <div class="wf-inspector-head">
             <span class="wf-inspector-bar"></span>
             <span class="wf-inspector-title">属性配置</span>
@@ -1504,15 +2421,22 @@ onBeforeUnmount(() => {
                     :key="`r-${gi}-${ri}`"
                     class="mb-2 flex flex-col gap-1 rounded border border-border p-2"
                   >
-                    <div class="flex flex-wrap gap-1">
+                    <div class="flex flex-wrap items-center gap-1">
                       <Select
                         v-model:value="row.scope"
                         :options="conditionScopeOptions"
-                        class="min-w-[120px]"
+                        class="min-w-[112px]"
+                      />
+                      <Select
+                        v-model:value="row.fieldType"
+                        :options="edgeFieldTypeOptions"
+                        class="min-w-[96px]"
+                        placeholder="类型"
+                        @change="onEdgeFieldTypeChange(row)"
                       />
                       <Select
                         v-model:value="row.op"
-                        :options="conditionOpOptions"
+                        :options="getEdgeConditionOpOptions(row)"
                         class="min-w-[100px]"
                       />
                       <Button
@@ -1526,11 +2450,73 @@ onBeforeUnmount(() => {
                     </div>
                     <Input
                       v-model:value="row.key"
-                      placeholder="form: amount；initiator: departmentId"
+                      placeholder="字段键（form/initiator 上下文键）"
+                    />
+                    <InputNumber
+                      v-if="
+                        (row.fieldType || 'string') === 'number' &&
+                        row.op !== 'between' &&
+                        row.op !== 'not_between'
+                      "
+                      v-model:value="row.value as any"
+                      class="w-full"
+                      placeholder="数字"
+                    />
+                    <div
+                      v-else-if="
+                        (row.fieldType || 'string') === 'number' &&
+                        (row.op === 'between' || row.op === 'not_between')
+                      "
+                      class="flex flex-wrap gap-1"
+                    >
+                      <InputNumber
+                        v-model:value="row.value as any"
+                        class="min-w-[120px]"
+                        placeholder="下限"
+                      />
+                      <InputNumber
+                        v-model:value="row.valueTo as any"
+                        class="min-w-[120px]"
+                        placeholder="上限"
+                      />
+                    </div>
+                    <Select
+                      v-else-if="(row.fieldType || 'string') === 'boolean'"
+                      v-model:value="row.value"
+                      :options="edgeBooleanValueOptions"
+                      class="w-full"
                     />
                     <Input
-                      v-model:value="row.value"
-                      placeholder="标量或 JSON 数组"
+                      v-else-if="
+                        (row.fieldType || 'string') === 'date' &&
+                        row.op !== 'between' &&
+                        row.op !== 'not_between'
+                      "
+                      v-model:value="row.value as any"
+                      placeholder="日期，如 2026-04-13"
+                    />
+                    <div
+                      v-else-if="
+                        (row.fieldType || 'string') === 'date' &&
+                        (row.op === 'between' || row.op === 'not_between')
+                      "
+                      class="flex flex-wrap gap-1"
+                    >
+                      <Input
+                        v-model:value="row.value as any"
+                        class="min-w-[140px]"
+                        placeholder="开始日期"
+                      />
+                      <Input
+                        v-model:value="row.valueTo as any"
+                        class="min-w-[140px]"
+                        placeholder="结束日期"
+                      />
+                    </div>
+                    <Input
+                      v-else
+                      v-model:value="row.value as any"
+                      placeholder="文本或 JSON 数组"
                     />
                   </div>
                   <Button
@@ -1620,6 +2606,194 @@ onBeforeUnmount(() => {
       :all-nodes="nodeSettingsAllNodes"
       @save="onNodeSettingsSave"
     />
+    <Modal
+      v-model:open="edgeRuleOpen"
+      title="规则条件设置"
+      width="920px"
+      :mask-closable="false"
+      @ok="onEdgeRuleModalOk"
+    >
+      <template v-if="selectedEdgeId">
+        <div class="mb-2">
+          <Tag color="orange">连线 ID: {{ selectedEdgeId }}</Tag>
+        </div>
+        <div class="mb-3 grid grid-cols-2 gap-3">
+          <div>
+            <div class="mb-1 text-xs text-muted-foreground">连接线名称</div>
+            <Input v-model:value="selectedEdgeName" placeholder="例如：条件1" />
+          </div>
+          <div>
+            <div class="mb-1 text-xs text-muted-foreground">条件描述</div>
+            <Input
+              v-model:value="selectedEdgeDesc"
+              placeholder="用于悬浮提示的完整描述"
+            />
+          </div>
+        </div>
+        <div class="mb-3">
+          <div class="mb-1 text-xs text-muted-foreground">
+            匹配优先级（数字越小越先尝试）
+          </div>
+          <InputNumber
+            v-model:value="selectedEdgePriority"
+            :min="0"
+            :max="999"
+            class="w-full"
+          />
+        </div>
+        <div class="mb-3">
+          <Checkbox v-model:checked="selectedEdgeIsReturn">
+            是否退回出口（表示该连线用于驳回/退回）
+          </Checkbox>
+        </div>
+        <div class="mb-2 text-xs font-medium text-foreground">
+          结构化出口（ruleGroups）
+        </div>
+        <div
+          v-for="(grp, gi) in edgeGroups"
+          :key="`dlg-g-${gi}`"
+          class="mb-3 rounded border border-dashed border-primary/40 p-2"
+        >
+          <div class="mb-2 flex items-center justify-between">
+            <span class="text-xs font-medium">
+              条件组 {{ gi + 1 }}（组内 AND）
+            </span>
+            <Button
+              v-if="edgeGroups.length > 1"
+              size="small"
+              type="link"
+              danger
+              @click="removeEdgeGroup(gi)"
+            >
+              删除本组
+            </Button>
+          </div>
+          <div
+            v-for="(row, ri) in grp.rules"
+            :key="`dlg-r-${gi}-${ri}`"
+            class="mb-2 flex flex-col gap-1 rounded border border-border p-2"
+          >
+            <div class="flex flex-wrap items-center gap-1">
+              <Select
+                v-model:value="row.scope"
+                :options="conditionScopeOptions"
+                class="min-w-[112px]"
+              />
+              <Select
+                v-model:value="row.fieldType"
+                :options="edgeFieldTypeOptions"
+                class="min-w-[96px]"
+                placeholder="类型"
+                @change="onEdgeFieldTypeChange(row)"
+              />
+              <Select
+                v-model:value="row.op"
+                :options="getEdgeConditionOpOptions(row)"
+                class="min-w-[100px]"
+              />
+              <Button
+                size="small"
+                type="link"
+                danger
+                @click="removeEdgeRuleRow(gi, ri)"
+              >
+                删除
+              </Button>
+            </div>
+            <Input
+              v-model:value="row.key"
+              placeholder="字段键（例如 amount）"
+            />
+            <InputNumber
+              v-if="
+                (row.fieldType || 'string') === 'number' &&
+                row.op !== 'between' &&
+                row.op !== 'not_between'
+              "
+              v-model:value="row.value as any"
+              class="w-full"
+              placeholder="数字"
+            />
+            <div
+              v-else-if="
+                (row.fieldType || 'string') === 'number' &&
+                (row.op === 'between' || row.op === 'not_between')
+              "
+              class="flex flex-wrap gap-1"
+            >
+              <InputNumber
+                v-model:value="row.value as any"
+                class="min-w-[120px]"
+                placeholder="下限"
+              />
+              <InputNumber
+                v-model:value="row.valueTo as any"
+                class="min-w-[120px]"
+                placeholder="上限"
+              />
+            </div>
+            <Select
+              v-else-if="(row.fieldType || 'string') === 'boolean'"
+              v-model:value="row.value"
+              :options="edgeBooleanValueOptions"
+              class="w-full"
+            />
+            <Input
+              v-else-if="
+                (row.fieldType || 'string') === 'date' &&
+                row.op !== 'between' &&
+                row.op !== 'not_between'
+              "
+              v-model:value="row.value as any"
+              placeholder="日期，如 2026-04-13"
+            />
+            <div
+              v-else-if="
+                (row.fieldType || 'string') === 'date' &&
+                (row.op === 'between' || row.op === 'not_between')
+              "
+              class="flex flex-wrap gap-1"
+            >
+              <Input
+                v-model:value="row.value as any"
+                class="min-w-[140px]"
+                placeholder="开始日期"
+              />
+              <Input
+                v-model:value="row.valueTo as any"
+                class="min-w-[140px]"
+                placeholder="结束日期"
+              />
+            </div>
+            <Input
+              v-else
+              v-model:value="row.value as any"
+              placeholder="值（数组可写 JSON，如 [1,2]）"
+            />
+          </div>
+          <Button block size="small" type="dashed" @click="addEdgeRuleRow(gi)">
+            + 本组添加条件
+          </Button>
+        </div>
+        <Button
+          block
+          class="mb-3"
+          size="small"
+          type="dashed"
+          @click="addEdgeGroup"
+        >
+          + 添加条件组（OR）
+        </Button>
+        <div class="mb-1 text-xs text-muted-foreground">
+          兼容：单行表达式（无结构化规则时）
+        </div>
+        <Input
+          v-model:value="selectedEdgeCondition"
+          placeholder="示例: amount >= 1000"
+        />
+      </template>
+      <div v-else class="text-sm text-muted-foreground">请先双击一条连线</div>
+    </Modal>
   </div>
 </template>
 
@@ -1627,6 +2801,82 @@ onBeforeUnmount(() => {
 .wf-designer-root {
   height: 100%;
   min-height: 0;
+}
+
+.wf-designer-root--embedded .wf-studio {
+  min-height: 0;
+  flex: 1;
+  height: 100%;
+}
+
+.wf-designer-root--embedded .wf-main {
+  min-height: 0;
+  /* 节点库约为独立页时的三分之一宽（原 220px） */
+  grid-template-columns: calc(220px / 3) 1fr min(380px, 34vw);
+}
+
+.wf-designer-root--embedded .wf-main--no-inspector {
+  grid-template-columns: calc(220px / 3) 1fr;
+}
+
+.wf-designer-root--embedded .wf-main > * {
+  min-height: 0;
+}
+
+/* 嵌入窄节点库：纵向紧凑排布，隐藏说明与底部提示 */
+.wf-designer-root--embedded .wf-palette {
+  gap: 8px;
+  padding: 6px 4px;
+}
+
+.wf-designer-root--embedded .wf-palette-title {
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.wf-designer-root--embedded .wf-palette-h {
+  margin-top: 2px;
+  font-size: 9px;
+  text-align: center;
+}
+
+.wf-designer-root--embedded .wf-palette-item {
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 2px;
+}
+
+.wf-designer-root--embedded .wf-palette-ico {
+  width: 22px;
+  height: 22px;
+}
+
+.wf-designer-root--embedded .wf-palette-desc {
+  display: none;
+}
+
+.wf-designer-root--embedded .wf-palette-name {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  word-break: break-all;
+}
+
+.wf-designer-root--embedded .wf-palette-hint {
+  display: none;
+}
+
+.wf-designer-root--embedded .wf-canvas-panel {
+  min-height: 0;
+}
+
+.wf-designer-root--embedded .lf-canvas {
+  flex: 1;
+  min-height: 200px;
+  height: 100%;
 }
 
 .wf-studio {
@@ -1718,6 +2968,11 @@ onBeforeUnmount(() => {
   width: 88px !important;
 }
 
+.wf-save-status {
+  font-size: 12px;
+  color: #64748b;
+}
+
 .wf-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1757,6 +3012,10 @@ onBeforeUnmount(() => {
   grid-template-columns: 220px 1fr min(380px, 34vw);
   gap: 0;
   min-height: 0;
+}
+
+.wf-main--no-inspector {
+  grid-template-columns: 220px 1fr;
 }
 
 .wf-palette {
@@ -1903,6 +3162,20 @@ onBeforeUnmount(() => {
   background: #ffffff;
 }
 
+.wf-edge-hover-tip {
+  position: fixed;
+  z-index: 1200;
+  max-width: 460px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #fff;
+  pointer-events: none;
+  background: rgb(15 23 42 / 92%);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgb(15 23 42 / 28%);
+}
+
 .wf-inspector {
   display: flex;
   flex-direction: column;
@@ -1957,10 +3230,23 @@ onBeforeUnmount(() => {
   .wf-main {
     grid-template-columns: 200px 1fr min(340px, 38vw);
   }
+
+  .wf-designer-root--embedded .wf-main {
+    grid-template-columns: calc(200px / 3) 1fr min(340px, 38vw);
+  }
+
+  .wf-designer-root--embedded .wf-main--no-inspector {
+    grid-template-columns: calc(200px / 3) 1fr;
+  }
 }
 
 @media (max-width: 1024px) {
   .wf-main {
+    grid-template-columns: 1fr;
+  }
+
+  .wf-designer-root--embedded .wf-main,
+  .wf-designer-root--embedded .wf-main--no-inspector {
     grid-template-columns: 1fr;
   }
 

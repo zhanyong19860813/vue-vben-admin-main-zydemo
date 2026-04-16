@@ -105,6 +105,13 @@ export interface WfApprovalWeaverUiState {
   nodeOperatorNodeLabel?: string;
   /** 对象类型=节点操作者：取该节点操作者中的本人/经理 */
   nodeOperatorPickMode?: 'manager' | 'self';
+  /**
+   * 当前审批节点：解析出的办理人与前序/本人重复时，是否允许自动跳过本节点（默认 true）。
+   * 若本节点有表单必填项等，可设为 false。
+   */
+  autoSkipWhenSameActor?: boolean;
+  /** @deprecated 请使用 autoSkipWhenSameActor；旧数据兼容 */
+  nodeOperatorAutoSkip?: boolean;
 }
 
 /** 审批节点「操作者」明细表（与表头审批来源对应，供展示与引擎解析） */
@@ -124,12 +131,25 @@ export interface WfApprovalOperatorRow {
 }
 
 export type WfApprovalHeaderConditionJoin = 'and' | 'or';
-export type WfApprovalHeaderConditionOp = '!=' | '<' | '<=' | '==' | '>' | '>=';
+export type WfApprovalHeaderConditionOp =
+  | '!='
+  | '<'
+  | '<='
+  | '=='
+  | '>'
+  | '>='
+  | 'between'
+  | 'not_between';
 export type WfApprovalHeaderConditionRuleType =
   | 'actor_security'
   | 'actor_user'
   | 'form_compare';
 export type WfApprovalHeaderConditionActorSource = 'initiator' | 'node';
+export type WfApprovalHeaderConditionFieldType =
+  | 'boolean'
+  | 'date'
+  | 'number'
+  | 'string';
 
 export interface WfApprovalHeaderConditionRule {
   id: string;
@@ -138,6 +158,8 @@ export interface WfApprovalHeaderConditionRule {
   type: WfApprovalHeaderConditionRuleType;
   /** type=form_compare */
   formFieldKey?: string;
+  /** type=form_compare：字段值类型（决定比较与转换） */
+  formFieldType?: WfApprovalHeaderConditionFieldType;
   /** type=actor_security/actor_user */
   actorSource?: WfApprovalHeaderConditionActorSource;
   /** actorSource=node 时必填 */
@@ -146,6 +168,8 @@ export interface WfApprovalHeaderConditionRule {
   op?: WfApprovalHeaderConditionOp;
   /** form_compare / actor_security 用 */
   value?: number | string;
+  /** op=between/not_between 时的右边界 */
+  valueTo?: number | string;
   /** actor_user 用 */
   userId?: string;
   userName?: string;
@@ -186,6 +210,27 @@ export interface WfInitiatorPermission {
   minSecurityLevel?: number | null;
 }
 
+/** 节点绑定的表单字段展示策略（缺省按 visible） */
+export type WfNodeFormFieldRule = 'visible' | 'hidden' | 'readonly';
+
+/** 节点表单来源：设计器库表或本地 `views/workflowExtForm/<key>/index.vue` */
+export type WfNodeFormSource = 'designer' | 'ext';
+
+/** 节点级表单绑定（与流程级绑定解耦：同表单在不同节点可有不同 fieldRules） */
+export interface WfNodeFormBinding {
+  /** 缺省按设计器；`ext` 时配合 `extFormKey`，`formCode` 固定为 `__wf_ext__:<key>` 便于兼容旧逻辑 */
+  formSource?: WfNodeFormSource;
+  /** `workflowExtForm` 下子目录名（可含一层路径，如 `pkg/foo`） */
+  extFormKey?: string;
+  formCode: string;
+  formName?: string;
+  formVersion?: string | number;
+  /**
+   * 主表字段用 `fieldName`；「上表+页签表格」下列字段用 `页签key::列field`（与设计器 FormTabsTablePreview 一致）。
+   */
+  fieldRules?: Record<string, WfNodeFormFieldRule>;
+}
+
 /** 节点 properties 完整形状（LogicFlow 另有 bizType、assignee、text 等） */
 export interface WfNodeProperties {
   bizType?: WfBizNodeType;
@@ -222,13 +267,20 @@ export interface WfNodeProperties {
   timeoutPolicy?: WfTimeoutPolicy;
   /** 发起人权限（开始节点） */
   initiatorPermission?: WfInitiatorPermission;
+  /** 本节点展示的表单及字段级可见性（设计器持久化在 graphData） */
+  formBinding?: WfNodeFormBinding;
 }
 
 export type WfConditionScope = 'form' | 'initiator';
 
+/** 连线条件：字段值类型（与表头条件 formFieldType 对齐，用于约束操作符与比较） */
+export type WfEdgeFieldType = 'boolean' | 'date' | 'number' | 'string';
+
 export interface WfEdgeConditionRule {
   scope: WfConditionScope;
   key: string;
+  /** 缺省按 string 处理 */
+  fieldType?: WfEdgeFieldType;
   op:
     | '=='
     | '!='
@@ -236,6 +288,8 @@ export interface WfEdgeConditionRule {
     | '>='
     | '<'
     | '<='
+    | 'between'
+    | 'not_between'
     | 'contains'
     | 'startsWith'
     | 'endsWith'
@@ -243,6 +297,8 @@ export interface WfEdgeConditionRule {
     | 'notIn'
     | 'containsAny';
   value: string | number | boolean | string[] | number[];
+  /** op 为 between / not_between 时的右边界 */
+  valueTo?: string | number;
 }
 
 /** 单组：组内全部满足 */
@@ -256,7 +312,10 @@ export interface WfEdgeRuleGroups {
 }
 
 export interface WfEdgeProperties {
+  /** 同一源节点多条出线的检查顺序：数值越小越先判断；命中一条后不再判断其余出线（与引擎一致）。 */
   priority?: number;
+  /** 是否为退回出口（用于运行时识别“驳回/退回”路径） */
+  isReturn?: boolean;
   /** 单组 AND 的简写；与 ruleGroups 二存一时建议优先 ruleGroups */
   rules?: WfEdgeConditionRule[];
   ruleGroups?: WfEdgeRuleGroups;
@@ -310,6 +369,97 @@ export interface WfDefinitionPayloadShape {
   processVersion: number;
   wfMeta: WfDefinitionMeta;
   graphData: Record<string, unknown>;
+  /** 供流程引擎直接解析的扁平执行模型（避免引擎依赖画布坐标/样式） */
+  engineModel?: WfEngineDefinitionModel;
+}
+
+export type WfEngineNodeType = 'approve' | 'cc' | 'condition' | 'end' | 'start';
+
+export interface WfEngineNodeModel {
+  id: string;
+  name: string;
+  type: WfEngineNodeType;
+  properties?: WfNodeProperties;
+  /** 审批节点执行专用配置（从 properties 归一化，避免引擎自行猜语义） */
+  approveConfig?: WfEngineApproveNodeConfig;
+}
+
+export interface WfEngineEdgeModel {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  name?: string;
+  desc?: string;
+  priority: number;
+  /** true=该出口表示“退回/驳回”语义 */
+  isReturn?: boolean;
+  /** 引擎优先读 ruleGroups，其次 rules，最后 condition */
+  ruleGroups?: WfEdgeRuleGroups;
+  rules?: WfEdgeConditionRule[];
+  condition?: string;
+}
+
+/** 手动干预：支持将某节点后续强制路由到指定节点（例如 A 强制到 B） */
+export interface WfEngineManualRouteRule {
+  id: string;
+  enabled: boolean;
+  fromNodeId: string;
+  /** 强制下一节点 */
+  forceToNodeId: string;
+  reason?: string;
+}
+
+export interface WfEngineManualInterventionModel {
+  enabled: boolean;
+  rules: WfEngineManualRouteRule[];
+}
+
+export interface WfEngineDefinitionModel {
+  startNodeId?: string;
+  nodes: WfEngineNodeModel[];
+  edges: WfEngineEdgeModel[];
+  /** 全局执行策略（冻结优先级与批次逻辑） */
+  executionPolicy: WfEngineExecutionPolicy;
+  /** 预留：运行时人工干预路由规则 */
+  manualIntervention: WfEngineManualInterventionModel;
+}
+
+export type WfEngineSignMode = 'all' | 'any' | 'cc' | 'sequential';
+
+export interface WfEngineApproveOperatorRow {
+  id?: string;
+  kind: string;
+  name: string;
+  refValue?: string;
+  level?: string;
+  batch: number;
+  batchCondition?: string;
+  signMode: WfEngineSignMode;
+}
+
+export interface WfEngineApproveNodeConfig {
+  /** 执行数据源：仅使用明细表，表头仅做配置 */
+  source: 'approvalOperatorRows';
+  /** 不同批次命中首批即停 */
+  batchMatchPolicy: 'first_matched_stop';
+  /** 同批默认并发分发 */
+  sameBatchDispatch: 'parallel';
+  /** 相同批次默认语义：非会签（或签） */
+  sameBatchDefaultSignMode: 'any';
+  headerConditionText?: string;
+  headerConditionRules?: WfApprovalHeaderConditionRule[];
+  rows: WfEngineApproveOperatorRow[];
+}
+
+export interface WfEngineExecutionPolicy {
+  /** 审批人解析优先级（从高到低） */
+  resolverPriority: Array<
+    'approvalWeaverUi_view_only' | 'approverResolve' | 'assigneeStrategies' | 'manualIntervention'
+  >;
+  /** 相同批次未显式会签属性时默认非会签 */
+  sameBatchDefaultSignMode: 'any';
+  /** 不同批次按顺序命中首批即停 */
+  batchMatchPolicy: 'first_matched_stop';
 }
 
 export function summarizeEdgeRules(rules: WfEdgeConditionRule[] | undefined): string {
@@ -317,7 +467,13 @@ export function summarizeEdgeRules(rules: WfEdgeConditionRule[] | undefined): st
   return rules
     .map((r) => {
       const v = Array.isArray(r.value) ? `[${r.value.join(',')}]` : String(r.value);
-      return `${r.scope}.${r.key} ${r.op} ${v}`;
+      const ft = r.fieldType ? `[${r.fieldType}]` : '';
+      if (r.op === 'between' || r.op === 'not_between') {
+        const v2 =
+          r.valueTo === undefined || r.valueTo === null ? '' : String(r.valueTo);
+        return `${r.scope}.${r.key}${ft} ${r.op} ${v} ~ ${v2}`;
+      }
+      return `${r.scope}.${r.key}${ft} ${r.op} ${v}`;
     })
     .join(' ∧ ');
 }
