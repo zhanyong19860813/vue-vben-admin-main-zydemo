@@ -21,6 +21,7 @@ import {
   Segmented,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tree,
@@ -121,7 +122,7 @@ onUnmounted(() => {
 });
 
 const { events: debugEvents, push: pushDebugEvent } = useDebugHelper({ maxEvents: 10 });
-/** ??????????????????? true ?????? */
+/** 调试面板默认关闭，改成 true 可显示。 */
 const showDebugPanel = false;
 
 const treeData = ref<TreeProps['treeData']>([]);
@@ -136,16 +137,16 @@ const treeCrudSubmitting = ref(false);
 const treeCrudMode = ref<TreeCrudMode>('addCat');
 const treeCrudModalTitle = computed(() => {
   const m: Record<TreeCrudMode, string> = {
-    addCat: '????',
-    addProc: '????',
-    editCat: '????',
-    editProc: '????',
+    addCat: '新建目录',
+    addProc: '新建流程',
+    editCat: '编辑目录',
+    editProc: '编辑流程',
   };
   return m[treeCrudMode.value];
 });
 
 const treeForm = reactive({
-  /** ??????????= ???????????? */
+  /** 新建目录时的父目录；为空表示顶级目录。 */
   newCategoryParentId: '',
   categoryName: '',
   folderCode: '',
@@ -164,7 +165,7 @@ const categorySelectOptions = computed(() =>
   })),
 );
 
-/** ??????parent ?????????????? */
+/** 计算目录距根节点的层级，用于下拉缩进显示。 */
 function categoryRootDepth(id: string): number {
   const cats = lastTreeSnapshot.value.categories || [];
   let depth = 0;
@@ -181,7 +182,7 @@ function categoryRootDepth(id: string): number {
 const parentCategoryOptionsForNewFolder = computed(() => {
   const rootOpt = {
     value: '',
-    label: '???????????????',
+    label: '作为顶级目录（无上级）',
   };
   const cats = [...(lastTreeSnapshot.value.categories || [])].sort(
     (a, b) => a.sortNo - b.sortNo || a.name.localeCompare(b.name, 'zh-CN'),
@@ -212,7 +213,7 @@ function buildTreeFromPayload(
     }
     for (const p of procList.filter((x) => (x.categoryId || '') === categoryId)) {
       nodes.push({
-        title: `${p.processName}?${p.processCode}?`,
+        title: `${p.processName}（${p.processCode}）`,
         key: `p-${p.id}`,
         isLeaf: true,
       });
@@ -230,7 +231,7 @@ function buildTreeFromPayload(
   }
   for (const p of procList.filter((x) => !x.categoryId)) {
     roots.push({
-      title: `${p.processName}?${p.processCode}?`,
+      title: `${p.processName}（${p.processCode}）`,
       key: `p-${p.id}`,
       isLeaf: true,
     });
@@ -253,7 +254,7 @@ async function loadTree(selectFirstProcess = false) {
     }
     pushDebugEvent(`tree.loaded cats=${data.categories?.length ?? 0} procs=${data.processes?.length ?? 0}`);
   } catch (e) {
-    message.error(`???????${(e as Error).message}`);
+    message.error(`加载流程目录失败：${(e as Error).message}`);
     pushDebugEvent(`tree.fail ${(e as Error).message}`);
   } finally {
     treeLoading.value = false;
@@ -274,10 +275,10 @@ function findFirstProcessKey(nodes: TreeProps['treeData']): string | undefined {
 async function seedDemoTree() {
   try {
     await wfEngineSeedDemoTree();
-    message.success('????????');
+    message.success('演示目录初始化成功');
     await loadTree(true);
   } catch (e) {
-    message.error(`??????${(e as Error).message}`);
+    message.error(`初始化演示目录失败：${(e as Error).message}`);
   }
 }
 
@@ -290,7 +291,7 @@ const canEditTreeSelection = computed(() => {
 
 const currentProcessDefId = ref<string | null>(null);
 const lastLoadedVersionNo = ref<number | null>(null);
-/** ??????wf_process_def.category_id???????? */
+/** 当前流程所属目录，对应 wf_process_def.category_id。 */
 const currentCategoryId = ref<string | null>(null);
 
 interface BasicFormModel {
@@ -299,6 +300,8 @@ interface BasicFormModel {
   version: string;
   initiatorScope: string;
   remark: string;
+  /** 当前流程是否有效，对应 wf_process_def.is_valid。 */
+  isValid: boolean;
 }
 
 const basicForm = reactive<BasicFormModel>({
@@ -307,9 +310,10 @@ const basicForm = reactive<BasicFormModel>({
   version: '',
   initiatorScope: '',
   remark: '',
+  isValid: true,
 });
 
-/** ??????????????*/
+/** 基础信息表单列宽配置。 */
 const basicFormLabelCol = { flex: '0 0 100px' };
 const basicFormWrapperCol = { flex: '1 1 auto', minWidth: 0 };
 
@@ -319,6 +323,7 @@ function resetBasicFormEmpty() {
   basicForm.version = '';
   basicForm.initiatorScope = '';
   basicForm.remark = '';
+  basicForm.isValid = true;
 }
 
 function isProcessLeafKey(key: string | undefined): key is string {
@@ -366,6 +371,7 @@ async function loadProcessFromApi(leafKey: string) {
     currentCategoryId.value = pd.categoryId ?? null;
     basicForm.code = pd.processCode ?? '';
     basicForm.name = pd.processName ?? '';
+    basicForm.isValid = pd.isValid !== false;
     lastLoadedVersionNo.value = data.version?.versionNo ?? null;
     basicForm.version =
       data.version?.versionNo != null ? String(data.version.versionNo) : '0';
@@ -373,6 +379,16 @@ async function loadProcessFromApi(leafKey: string) {
     if (data.version?.definitionJson) {
       try {
         const parsed = JSON.parse(data.version.definitionJson) as Record<string, unknown>;
+        /** 兼容旧数据：仅有 graph 而无 graphData */
+        if (
+          parsed &&
+          !(parsed as { graphData?: unknown }).graphData &&
+          (parsed as { graph?: { nodes?: unknown[] } }).graph?.nodes
+        ) {
+          (parsed as { graphData?: unknown }).graphData = (
+            parsed as { graph?: unknown }
+          ).graph;
+        }
         pendingApplyDefinition.value = parsed;
         basicForm.initiatorScope = String(
           (parsed as any)?.initiatorScope ?? (parsed as any)?.wfMeta?.initiatorScope ?? '',
@@ -384,6 +400,9 @@ async function loadProcessFromApi(leafKey: string) {
         basicForm.remark = '';
       }
     } else {
+      message.warning(
+        '该流程尚无已保存的版本定义，画布为空。请设计后点击「保存到数据库」；若为新库可重新执行演示种子。',
+      );
       pendingApplyDefinition.value = {
         processCode: basicForm.code,
         processName: basicForm.name,
@@ -408,6 +427,12 @@ async function loadProcessFromApi(leafKey: string) {
   }
 }
 
+/** 嵌入设计器在 await+rAF 后才 init LogicFlow，晚于父级双 nextTick，首次 apply 常失败；画布就绪后再灌入一次。 */
+function onWorkflowDesignerCanvasReady() {
+  if (!pendingApplyDefinition.value) return;
+  flushPendingDefinitionToDesigner();
+}
+
 function flushPendingDefinitionToDesigner() {
   const snap = pendingApplyDefinition.value;
   const apply = workflowDesignerRef.value?.applyWorkflowDraftFromObject;
@@ -416,6 +441,10 @@ function flushPendingDefinitionToDesigner() {
     return;
   }
   if (!snap) {
+    /** 灌入成功后 pending 会置空；后续延时/rAF 再次 flush 时不得用空图覆盖，否则会出现「闪一下又没了」 */
+    if (isProcessLeafKey(selectedKeys.value[0])) {
+      return;
+    }
     const cleared = {
       processCode: basicForm.code,
       processName: basicForm.name,
@@ -452,18 +481,34 @@ function flushPendingDefinitionToDesigner() {
 
 function schedulePendingApplyRetry(reason: string) {
   if (!pendingApplyDefinition.value) return;
-  if (pendingApplyRetryCount >= 20) {
+  if (pendingApplyRetryCount >= 40) {
     pushDebugEvent(`apply.give_up reason=${reason}`);
     return;
   }
   pendingApplyRetryCount += 1;
   if (pendingApplyRetryTimer) clearTimeout(pendingApplyRetryTimer);
-  const delay = Math.min(600, 80 * pendingApplyRetryCount);
+  const delay = Math.min(800, 60 * pendingApplyRetryCount);
   pushDebugEvent(`apply.retry#${pendingApplyRetryCount} in ${delay}ms reason=${reason}`);
   pendingApplyRetryTimer = setTimeout(() => {
     pendingApplyRetryTimer = null;
     flushPendingDefinitionToDesigner();
   }, delay);
+}
+
+/**
+ * 与嵌入 WorkflowDesigner 内 initLogicFlow 的 nextTick + 双 rAF 对齐，避免首次灌入时 lf 尚未创建。
+ * 只调度一次 flush，避免成功灌入后二次 flush 因 pending 已空而误清空画布。
+ */
+function scheduleFlushAfterProcessLoad() {
+  void nextTick(() => {
+    void nextTick(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          flushPendingDefinitionToDesigner();
+        });
+      });
+    });
+  });
 }
 
 watch(
@@ -479,11 +524,7 @@ watch(
       currentCategoryId.value = null;
       pendingApplyDefinition.value = null;
     }
-    void nextTick(() => {
-      void nextTick(() => {
-        flushPendingDefinitionToDesigner();
-      });
-    });
+    scheduleFlushAfterProcessLoad();
   },
   { immediate: true },
 );
@@ -511,12 +552,12 @@ const debugStorageInfo = computed(() => {
 async function saveCurrentToDatabase() {
   const id = currentProcessDefId.value;
   if (!id || !canPersistCurrentProcess.value) {
-    message.warning('???????????');
+    message.warning(uiText.saveWarnSelectProcess);
     return;
   }
   const definition = workflowDesignerRef.value?.getWorkflowDraftSnapshot?.() ?? null;
   if (!definition || typeof definition !== 'object') {
-    message.warning('???????????');
+    message.warning(uiText.saveWarnNoDraft);
     return;
   }
   try {
@@ -526,14 +567,15 @@ async function saveCurrentToDatabase() {
       categoryId: currentCategoryId.value,
       initiatorScope: basicForm.initiatorScope,
       remark: basicForm.remark,
+      isValid: basicForm.isValid,
       definition: definition as Record<string, unknown>,
     });
     lastLoadedVersionNo.value = res.versionNo;
     basicForm.version = String(res.versionNo);
-    message.success(`?????????? ${res.versionNo}?`);
+    message.success(`${uiText.saveSuccess}${res.versionNo}`);
     pushDebugEvent(`db.save.ok ver=${res.versionNo}`);
   } catch (e) {
-    message.error(`?????${(e as Error).message}`);
+    message.error(`${uiText.errSavePrefix}${(e as Error).message}`);
     pushDebugEvent(`db.save.fail ${(e as Error).message}`);
   }
 }
@@ -542,15 +584,15 @@ async function publishCurrentVersion() {
   const id = currentProcessDefId.value;
   const ver = lastLoadedVersionNo.value;
   if (!id || ver == null) {
-    message.warning('??????????');
+    message.warning(uiText.publishWarnNoVer);
     return;
   }
   try {
     await wfEnginePublishProcess({ processDefId: id, versionNo: ver });
-    message.success(`????? ${ver}`);
+    message.success(`${uiText.publishSuccess}${ver}`);
     pushDebugEvent(`db.publish.ok ver=${ver}`);
   } catch (e) {
-    message.error(`?????${(e as Error).message}`);
+    message.error(`${uiText.errPublishPrefix}${(e as Error).message}`);
   }
 }
 
@@ -571,7 +613,7 @@ async function fetchDemoPreviewTemplate(): Promise<WfProcessPreviewJson | null> 
 async function openProcessPreviewWindow(mode: 'desktop' | 'mobile' = 'desktop') {
   const baseJson = await fetchDemoPreviewTemplate();
   if (!baseJson) {
-    message.error('???????????? public/workflow/process-preview-demo.json ??');
+    message.error('未找到预览模板，请确认 `public/workflow/process-preview-demo.json` 存在');
     return;
   }
   const definition = workflowDesignerRef.value?.getWorkflowDraftSnapshot?.() ?? null;
@@ -589,10 +631,10 @@ async function openProcessPreviewWindow(mode: 'desktop' | 'mobile' = 'desktop') 
     sessionStorage.setItem(WF_PROCESS_PREVIEW_SESSION_KEY, JSON.stringify(built.merged));
     localStorage.setItem(WF_PROCESS_PREVIEW_LOCAL_KEY, JSON.stringify(built.merged));
   } catch (e) {
-    message.error(`??????????${(e as Error).message}`);
+    message.error(`写入预览缓存失败：${(e as Error).message}`);
     return;
   }
-  /** ??path ???????? coreRoutes ??name ??????????????*/
+  /** 直接使用 path，避免依赖路由 name 导致嵌套路由解析异常。 */
   const href = router.resolve({
     path: '/workflow/process-preview',
     query: mode === 'mobile' ? { mode: 'mobile' } : undefined,
@@ -612,6 +654,8 @@ const runtimeStarterPickerOpen = ref(false);
 const runtimeStarterLoading = ref(false);
 const runtimeStarterKeyword = ref('');
 const runtimeStarterValue = ref<string>();
+const runtimeUseDraftDefinition = ref(true);
+const WF_RUNTIME_DRAFT_STORAGE_PREFIX = 'wf-runtime-draft:';
 type RuntimeStarterOption = {
   id: string;
   empId: string;
@@ -684,7 +728,7 @@ async function loadRuntimeStarterOptions(keyword: string) {
           name: name || empId,
           deptName: pickRuntimeField(r, 'longdeptname', 'Longdeptname', 'deptName', 'dept_name'),
           dutyName: pickRuntimeField(r, 'dutyName', 'DutyName', 'positionName', 'postName'),
-          label: `${name || '??'}?${empId || id}?`,
+          label: `${name || '未命名'}（${empId || id}）`,
         } as RuntimeStarterOption;
       })
       .filter((x): x is RuntimeStarterOption => !!x);
@@ -694,7 +738,7 @@ async function loadRuntimeStarterOptions(keyword: string) {
     }
   } catch (e) {
     runtimeStarterOptions.value = [];
-    message.error(`????????${(e as Error).message}`);
+    message.error(`查询模拟发起人失败：${(e as Error).message}`);
   } finally {
     runtimeStarterLoading.value = false;
   }
@@ -703,12 +747,12 @@ async function loadRuntimeStarterOptions(keyword: string) {
 function confirmRuntimeStarter() {
   const selectedId = String(runtimeStarterValue.value || '').trim();
   if (!selectedId) {
-    message.warning('???????');
+    message.warning('请选择模拟发起人');
     return;
   }
   const first = runtimeStarterCache.value[selectedId];
   if (!first) {
-    message.warning('????????????????');
+    message.warning('未找到已选择的发起人，请重新搜索并选择');
     return;
   }
   runtimeStarterLastPicked.value = first;
@@ -716,12 +760,32 @@ function confirmRuntimeStarter() {
   const query: Record<string, string> = {};
   if (basicForm.code.trim()) query.processCode = basicForm.code.trim();
   if (currentProcessDefId.value) query.processDefId = currentProcessDefId.value;
+  if (runtimeUseDraftDefinition.value) {
+    const definition = workflowDesignerRef.value?.getWorkflowDraftSnapshot?.() ?? null;
+    if (definition) {
+      const draftKey = `${WF_RUNTIME_DRAFT_STORAGE_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        localStorage.setItem(
+          draftKey,
+          JSON.stringify({
+            processCode: basicForm.code.trim(),
+            processName: basicForm.name.trim(),
+            definition,
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        query.runtimeDraftKey = draftKey;
+      } catch (e) {
+        message.warning(`写入运行台草稿失败，将仅使用已发布版本：${(e as Error).message}`);
+      }
+    }
+  }
   query.mockStarterUserId = (first.empId || first.id || '').trim();
   query.mockStarterName = (first.name || '').trim();
   if (first.deptName?.trim()) query.mockStarterDeptName = first.deptName.trim();
   if (first.dutyName?.trim()) query.mockStarterPositionName = first.dutyName.trim();
   const href = router.resolve({
-    path: '/workflow/runtime',
+    path: '/workflow/runtime-embed',
     query,
   }).href;
   window.open(href, '_blank', 'noopener,noreferrer,width=1320,height=920');
@@ -741,6 +805,7 @@ watch(
       runtimeStarterOptions.value = [];
       runtimeStarterKeyword.value = '';
     }
+    runtimeUseDraftDefinition.value = true;
   },
 );
 
@@ -760,11 +825,11 @@ function findTitleByKey(
 
 const currentProcessTitle = computed(() => {
   const k = selectedKeys.value[0];
-  if (!k) return '?????';
+  if (!k) return '\u672a\u9009\u62e9';
   return findTitleByKey(treeData.value, k) ?? k;
 });
 
-/** ????????????????/?????????????????????? */
+/** 传给设计器的基础元数据草稿，用于展示标题/编码/版本号。 */
 const designerMetaDraft = computed(() => ({
   processName: basicForm.name,
   processCode: basicForm.code,
@@ -772,7 +837,7 @@ const designerMetaDraft = computed(() => ({
 }));
 
 const activeTab = ref('basic');
-/** ???????????*/
+/** 流转信息子页签。 */
 const activeFlowSubTab = ref('graph');
 
 const uiText = {
@@ -798,11 +863,23 @@ const uiText = {
   version: '\u7248\u672c',
   initiatorScope: '\u53d1\u8d77\u4eba\u8303\u56f4',
   remark: '\u5907\u6ce8',
+  isValid: '\u662f\u5426\u6709\u6548',
   phCode: '\u5982\uff1aWF_LEAVE_DEMO',
   phName: '\u5982\uff1a\u52a0\u73ed\u6d41\u7a0b',
   phVersion: '\u5982\uff1a1.0',
   phScope: '\u7528\u4e8e\u63cf\u8ff0\u8be5\u6d41\u7a0b\u53ef\u7531\u54ea\u4e9b\u4eba\u5458/\u7ec4\u7ec7\u53d1\u8d77',
   phRemark: '\u6d41\u7a0b\u7528\u9014\u4e0e\u5907\u6ce8\u8bf4\u660e',
+  /** \u4fdd\u5b58\u5230\u6570\u636e\u5e93\u76f8\u5173\u63d0\u793a */
+  saveWarnSelectProcess:
+    '\u8bf7\u5148\u9009\u62e9\u5de6\u4fa7\u53ef\u7f16\u8f91\u7684\u6d41\u7a0b',
+  saveWarnNoDraft:
+    '\u65e0\u6cd5\u8bfb\u53d6\u6d41\u7a0b\u8bbe\u8ba1\u6570\u636e\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u6216\u5207\u6362\u5230\u300c\u6d41\u8f6c\u4fe1\u606f\u300d\u9875\u7b7e',
+  saveSuccess: '\u5df2\u4fdd\u5b58\u5230\u6570\u636e\u5e93\uff0c\u5f53\u524d\u7248\u672c ',
+  errSavePrefix: '\u4fdd\u5b58\u5931\u8d25\uff1a',
+  publishWarnNoVer:
+    '\u8bf7\u5148\u52a0\u8f7d\u6d41\u7a0b\u5e76\u4fdd\u5b58\u7248\u672c\u540e\u518d\u53d1\u5e03',
+  publishSuccess: '\u5df2\u53d1\u5e03\u7248\u672c ',
+  errPublishPrefix: '\u53d1\u5e03\u5931\u8d25\uff1a',
 } as const;
 
 interface NodeInfoTableRow {
@@ -816,7 +893,7 @@ interface NodeInfoTableRow {
 
 interface ExitInfoTableRow {
   key: string;
-  /** ???? priority ????????? */
+  /** 出口顺序，对应设计器里的 priority。 */
   priority: number;
   selected: boolean;
   sourceNodeName: string;
@@ -858,6 +935,15 @@ watch(
   { flush: 'post' },
 );
 
+watch(
+  () => workflowDesignerRef.value,
+  () => {
+    if (workflowDesignerRef.value && pendingApplyDefinition.value) {
+      void nextTick(() => flushPendingDefinitionToDesigner());
+    }
+  },
+);
+
 const nodeInfoRows = ref<NodeInfoTableRow[]>([]);
 const exitInfoRows = ref<ExitInfoTableRow[]>([]);
 
@@ -882,7 +968,7 @@ const nodeFormBindingInitial = computed<WfNodeFormBinding | null>(() => {
 const nodeBindingSyncOptions = computed(() =>
   nodeInfoRows.value.map((r) => ({
     value: r.key,
-    label: `${r.nodeName}?${r.nodeType}?`,
+    label: `${r.nodeName}（${r.nodeType}）`,
   })),
 );
 
@@ -904,13 +990,13 @@ function onNodeFormBindingSaved(binding: WfNodeFormBinding | null) {
   const id = nodeFormBindingNodeId.value;
   const ok = workflowDesignerRef.value?.applyNodeFormBinding?.(id, binding);
   if (ok) {
-    message.success(binding ? '?????????' : '???????');
+    message.success(binding ? '节点表单已更新' : '节点表单绑定已清空');
     void nextTick(() => {
       const rows = workflowDesignerRef.value?.getMgmtNodeTableRows?.();
       if (rows) nodeInfoRows.value = rows;
     });
   } else {
-    message.error('????????????????');
+    message.error('无法将节点表单变更同步回设计器');
   }
 }
 
@@ -920,7 +1006,7 @@ function onNodeFormBindingSyncToNodes(payload: {
 }) {
   const ids = Array.from(new Set(payload.nodeIds.filter(Boolean)));
   if (!ids.length) {
-    message.warning('????????');
+    message.warning('请选择要同步的节点');
     return;
   }
   let okCount = 0;
@@ -929,9 +1015,9 @@ function onNodeFormBindingSyncToNodes(payload: {
     if (ok) okCount += 1;
   }
   if (okCount === ids.length) {
-    message.success(`???? ${okCount} ???`);
+    message.success(`已同步 ${okCount} 个节点`);
   } else {
-    message.warning(`??? ${okCount}/${ids.length} ????????????`);
+    message.warning(`仅 ${okCount}/${ids.length} 个节点同步成功，请检查其余节点状态`);
   }
   void nextTick(() => {
     const rows = workflowDesignerRef.value?.getMgmtNodeTableRows?.();
@@ -964,13 +1050,15 @@ const nodeInfoColumns = computed<TableColumnType<NodeInfoTableRow>[]>(() => [
     ellipsis: true,
     customRender: ({ record }) =>
       h(
-        'span',
+        Button,
         {
-          class: 'cursor-pointer',
-          title: '\u53cc\u51fb\u53ef\u914d\u7f6e\u8282\u70b9\u529e\u7406\u4eba',
-          onDblclick: () => openNodeOperatorSettings(record),
+          type: 'link',
+          size: 'small',
+          class: '!h-auto px-0 py-0',
+          title: '单击可配置节点办理人',
+          onClick: () => openNodeOperatorSettings(record),
         },
-        record.operator || '\u2014',
+        () => record.operator || '未配置',
       ),
   },
   {
@@ -1004,7 +1092,7 @@ function onDesignerGraphExitRows(rows: ExitInfoTableRow[]) {
 function openExitConditionSettings(record: ExitInfoTableRow) {
   const edgeId = String(record?.key || '').trim();
   if (!edgeId || edgeId.startsWith('e-')) {
-    message.warning('???????? ID??????????????????');
+    message.warning('当前出口 ID 无效，无法打开条件配置');
     return;
   }
   workflowDesignerRef.value?.openEdgeRuleFromDblClick?.(edgeId);
@@ -1013,17 +1101,17 @@ function openExitConditionSettings(record: ExitInfoTableRow) {
 function onExitPriorityChange(record: ExitInfoTableRow, value: number | null) {
   const edgeId = String(record?.key || '').trim();
   if (!edgeId || edgeId.startsWith('e-')) {
-    message.warning('???????? ID????????????????????');
+    message.warning('当前出口 ID 无效，无法修改优先级');
     return;
   }
   const next = value == null ? 100 : Math.trunc(value);
   const ok = workflowDesignerRef.value?.applyEdgePriority?.(edgeId, next);
   if (ok) {
-    message.success('???????');
+    message.success('出口优先级已更新');
     const rows = workflowDesignerRef.value?.getMgmtExitTableRows?.();
     if (rows) exitInfoRows.value = rows;
   } else {
-    message.error('???????????????????');
+    message.error('未能将出口优先级同步到设计器');
   }
 }
 
@@ -1037,23 +1125,23 @@ async function moveExitPriority(record: ExitInfoTableRow, direction: -1 | 1) {
   rows.splice(idx, 1);
   rows.splice(targetIdx, 0, moved);
 
-  // ???????????????? = ??????
+  // 重新按顺序分配 priority，步长设为 10，便于后续插入。
   const base = 10;
   for (let i = 0; i < rows.length; i++) {
     const edgeId = String(rows[i]?.key || '').trim();
     if (!edgeId || edgeId.startsWith('e-')) {
-      message.warning('?????? ID?????????????????');
+      message.warning('存在无效出口 ID，无法重排优先级');
       return;
     }
     const ok = workflowDesignerRef.value?.applyEdgePriority?.(edgeId, (i + 1) * base);
     if (!ok) {
-      message.error('???????????????????');
+      message.error('未能将重排结果同步到设计器');
       return;
     }
   }
   const latest = workflowDesignerRef.value?.getMgmtExitTableRows?.();
   if (latest) exitInfoRows.value = latest;
-  message.success('???????');
+  message.success('出口顺序已重排');
 }
 
 const exitInfoColumns: TableColumnType<ExitInfoTableRow>[] = [
@@ -1091,7 +1179,7 @@ const exitInfoColumns: TableColumnType<ExitInfoTableRow>[] = [
   {
     title: '\u79fb\u52a8',
     key: 'move',
-    width: 118,
+    width: 92,
     align: 'center',
     customRender: ({ record, index }) =>
       h(Space, { size: 4 }, () => [
@@ -1099,19 +1187,23 @@ const exitInfoColumns: TableColumnType<ExitInfoTableRow>[] = [
           Button,
           {
             size: 'small',
+            type: 'text',
             disabled: (index ?? 0) <= 0,
+            title: '\u4e0a\u79fb',
             onClick: () => void moveExitPriority(record, -1),
           },
-          () => '\u4e0a\u79fb',
+          () => '\u2191',
         ),
         h(
           Button,
           {
             size: 'small',
+            type: 'text',
             disabled: (index ?? 0) >= exitInfoRows.value.length - 1,
+            title: '\u4e0b\u79fb',
             onClick: () => void moveExitPriority(record, 1),
           },
-          () => '\u4e0b\u79fb',
+          () => '\u2193',
         ),
       ]),
   },
@@ -1205,7 +1297,7 @@ watch(
   { flush: 'post' },
 );
 
-/** ?????????????????????????Tabs ????????????*/
+/** 切换到流转信息页签后，再触发一次设计器自适应。 */
 watch(
   () => activeTab.value,
   (tab) => {
@@ -1233,7 +1325,7 @@ function categoryIdContextForNewFolder(): string | undefined {
 
 function openAddCategoryModal() {
   treeCrudMode.value = 'addCat';
-  /** ?????????????????????????????????????? */
+  /** 新建目录时默认置空父目录，由用户主动选择挂载位置。 */
   treeForm.newCategoryParentId = '';
   treeForm.categoryName = '';
   treeForm.folderCode = '';
@@ -1254,14 +1346,14 @@ function openAddProcessModal() {
 function openEditTreeSelection() {
   const k = selectedKeys.value[0];
   if (!k || typeof k !== 'string') {
-    message.warning('????????????');
+    message.warning('请先选择要编辑的目录或流程');
     return;
   }
   if (k.startsWith('c-')) {
     const id = k.slice(2);
     const c = lastTreeSnapshot.value.categories.find((x) => x.id === id);
     if (!c) {
-      message.error('?????????????');
+      message.error('未找到对应目录信息');
       return;
     }
     treeCrudMode.value = 'editCat';
@@ -1276,7 +1368,7 @@ function openEditTreeSelection() {
     const id = k.slice(2);
     const p = lastTreeSnapshot.value.processes.find((x) => x.id === id);
     if (!p) {
-      message.error('?????????????');
+      message.error('未找到对应流程信息');
       return;
     }
     treeCrudMode.value = 'editProc';
@@ -1287,24 +1379,24 @@ function openEditTreeSelection() {
     treeCrudModalOpen.value = true;
     return;
   }
-  message.warning('??????????');
+  message.warning('请选择要编辑的节点');
 }
 
 function confirmDeleteTreeSelection() {
   const k = selectedKeys.value[0];
   if (!k || typeof k !== 'string') {
-    message.warning('????????????????');
+    message.warning('请先选择要删除的目录或流程');
     return;
   }
   const label = findTitleByKey(treeData.value, k) ?? k;
   if (k.startsWith('c-')) {
     Modal.confirm({
-      title: `?????${label}??`,
-      content: '???????????????????',
+      title: `确认删除目录“${label}”吗？`,
+      content: '删除后将无法恢复，请确认该目录下已无子目录或流程。',
       okType: 'danger',
       onOk: async () => {
         await wfEngineDeleteCategory({ categoryId: k.slice(2) });
-        message.success('?????');
+        message.success('目录已删除');
         await loadTree(true);
       },
     });
@@ -1312,12 +1404,12 @@ function confirmDeleteTreeSelection() {
   }
   if (k.startsWith('p-')) {
     Modal.confirm({
-      title: `?????${label}??`,
-      content: '????????????????/????????????????????',
+      title: `确认删除流程“${label}”吗？`,
+      content: '删除后将无法恢复，且会影响该流程的历史版本与实例查看。',
       okType: 'danger',
       onOk: async () => {
         await wfEngineDeleteProcess({ processDefId: k.slice(2) });
-        message.success('?????');
+        message.success('流程已删除');
         await loadTree(true);
       },
     });
@@ -1331,7 +1423,7 @@ async function submitTreeCrudModal() {
       const parentIdRaw = String(treeForm.newCategoryParentId ?? '').trim();
       const name = treeForm.categoryName.trim();
       if (!name) {
-        message.warning('???????');
+        message.warning('请输入目录名称');
         throw new Error('validation');
       }
       await wfEngineCreateCategory({
@@ -1340,7 +1432,7 @@ async function submitTreeCrudModal() {
         folderCode: treeForm.folderCode.trim() || undefined,
         sortNo: treeForm.sortNo,
       });
-      message.success('?????');
+      message.success('目录已创建');
       treeCrudModalOpen.value = false;
       await loadTree(false);
       return;
@@ -1349,7 +1441,7 @@ async function submitTreeCrudModal() {
       const code = treeForm.processCode.trim();
       const name = treeForm.processName.trim();
       if (!code || !name) {
-        message.warning('??????????');
+        message.warning('请输入流程编码和流程名称');
         throw new Error('validation');
       }
       const res = await wfEngineCreateProcess({
@@ -1357,7 +1449,7 @@ async function submitTreeCrudModal() {
         processName: name,
         categoryId: treeForm.processCategoryId ?? undefined,
       });
-      message.success('?????');
+      message.success('流程已创建');
       treeCrudModalOpen.value = false;
       await loadTree(false);
       if (res?.processDefId) selectedKeys.value = [`p-${res.processDefId}`];
@@ -1366,7 +1458,7 @@ async function submitTreeCrudModal() {
     if (treeCrudMode.value === 'editCat') {
       const name = treeForm.categoryName.trim();
       if (!name) {
-        message.warning('???????');
+        message.warning('请输入目录名称');
         throw new Error('validation');
       }
       await wfEngineUpdateCategory({
@@ -1375,7 +1467,7 @@ async function submitTreeCrudModal() {
         folderCode: treeForm.folderCode.trim() || undefined,
         sortNo: treeForm.sortNo,
       });
-      message.success('?????');
+      message.success('目录已更新');
       treeCrudModalOpen.value = false;
       await loadTree(false);
       return;
@@ -1383,7 +1475,7 @@ async function submitTreeCrudModal() {
     if (treeCrudMode.value === 'editProc') {
       const name = treeForm.processName.trim();
       if (!name) {
-        message.warning('???????');
+        message.warning('请输入流程名称');
         throw new Error('validation');
       }
       await wfEngineUpdateProcessMeta({
@@ -1391,7 +1483,7 @@ async function submitTreeCrudModal() {
         processName: name,
         categoryId: treeForm.processCategoryId ?? null,
       });
-      message.success('?????');
+      message.success('流程已更新');
       treeCrudModalOpen.value = false;
       await loadTree(false);
       if (currentProcessDefId.value === treeForm.editingProcessId) {
@@ -1403,7 +1495,7 @@ async function submitTreeCrudModal() {
     }
   } catch (e) {
     if ((e as Error)?.message !== 'validation') {
-      message.error(`?????${(e as Error).message}`);
+      message.error(`保存失败：${(e as Error).message}`);
     }
     throw e;
   } finally {
@@ -1413,9 +1505,18 @@ async function submitTreeCrudModal() {
 
 function onTreeSelect(keys: (number | string)[]) {
   const k = keys[0];
-  if (k !== undefined && k !== null) {
-    pushDebugEvent(`tree.select from=${selectedKeys.value[0] || '?'} to=${String(k)}`);
-    selectedKeys.value = [String(k)];
+  if (k === undefined || k === null) return;
+  const keyStr = String(k);
+  const prev = selectedKeys.value[0];
+  pushDebugEvent(`tree.select from=${prev || '?'} to=${keyStr}`);
+  selectedKeys.value = [keyStr];
+  /** 再次点击已选流程时 key 不变，watch 不触发，需手动拉取并灌入画布 */
+  if (isProcessLeafKey(keyStr) && keyStr === prev) {
+    pendingApplyRetryCount = 0;
+    void (async () => {
+      await loadProcessFromApi(keyStr);
+      scheduleFlushAfterProcessLoad();
+    })();
   }
 }
 </script>
@@ -1598,10 +1699,13 @@ function onTreeSelect(keys: (number | string)[]) {
                     :placeholder="uiText.phRemark"
                   />
                 </Form.Item>
+                <Form.Item :label="uiText.isValid" name="isValid">
+                  <Switch v-model:checked="basicForm.isValid" />
+                </Form.Item>
               </Form>
             </div>
           </Tabs.TabPane>
-          <Tabs.TabPane key="flow" :tab="uiText.flowTab">
+          <Tabs.TabPane key="flow" :tab="uiText.flowTab" :force-render="true">
             <div class="wf-mgmt-flow-body">
               <Segmented
                 v-model:value="activeFlowSubTab"
@@ -1618,10 +1722,11 @@ function onTreeSelect(keys: (number | string)[]) {
                 >
                   <div class="wf-mgmt-graph-embed">
                     <WorkflowDesigner
-                      v-if="activeTab === 'flow'"
+                      v-if="canPersistCurrentProcess"
                       ref="workflowDesignerRef"
                       embedded
                       :meta-draft="designerMetaDraft"
+                      @canvas-ready="onWorkflowDesignerCanvasReady"
                       @graph-data-change="onDesignerGraphNodeRows"
                       @graph-exit-data-change="onDesignerGraphExitRows"
                     />
@@ -1641,7 +1746,7 @@ function onTreeSelect(keys: (number | string)[]) {
                         pageSize: 10,
                         showSizeChanger: true,
                         pageSizeOptions: ['10', '20', '50'],
-                        showTotal: (t: number) => `? ${t} ?`,
+                        showTotal: (t: number) => `共 ${t} 条`,
                       }"
                       row-key="key"
                       size="small"
@@ -1663,7 +1768,7 @@ function onTreeSelect(keys: (number | string)[]) {
                         pageSize: 10,
                         showSizeChanger: true,
                         pageSizeOptions: ['10', '20', '50'],
-                        showTotal: (t: number) => `? ${t} ?`,
+                        showTotal: (t: number) => `共 ${t} 条`,
                       }"
                       row-key="key"
                       size="small"
@@ -1689,8 +1794,8 @@ function onTreeSelect(keys: (number | string)[]) {
         <Form layout="vertical">
           <Form.Item
             v-if="treeCrudMode === 'addCat'"
-            label="????"
-            extra="???????????????????????"
+            label="上级目录"
+            extra="不选择则创建为顶级目录，可在后续再调整层级。"
           >
             <Select
               v-model:value="treeForm.newCategoryParentId"
@@ -1700,35 +1805,35 @@ function onTreeSelect(keys: (number | string)[]) {
               class="w-full"
             />
           </Form.Item>
-          <Form.Item label="????" required>
-            <Input v-model:value="treeForm.categoryName" placeholder="???????" />
+          <Form.Item label="目录名称" required>
+            <Input v-model:value="treeForm.categoryName" placeholder="请输入目录名称" />
           </Form.Item>
           <Form.Item
-            label="?????folder_code?"
-            extra="??????????????????"
+            label="目录编码（folder_code）"
+            extra="可选，用于与外部系统或初始化脚本做稳定映射。"
           >
-            <Input v-model:value="treeForm.folderCode" placeholder="??CAT_HR" />
+            <Input v-model:value="treeForm.folderCode" placeholder="例如 CAT_HR" />
           </Form.Item>
-          <Form.Item label="???">
+          <Form.Item label="排序号">
             <InputNumber v-model:value="treeForm.sortNo" class="w-full" :min="0" />
           </Form.Item>
         </Form>
       </div>
       <div v-else-if="treeCrudMode === 'addProc'" class="flex flex-col gap-3">
         <Form layout="vertical">
-          <Form.Item label="????" required>
-            <Input v-model:value="treeForm.processCode" placeholder="????????? HR_LEAVE" />
+          <Form.Item label="流程编码" required>
+            <Input v-model:value="treeForm.processCode" placeholder="请输入流程编码，例如 HR_LEAVE" />
           </Form.Item>
-          <Form.Item label="????" required>
-            <Input v-model:value="treeForm.processName" placeholder="???????" />
+          <Form.Item label="流程名称" required>
+            <Input v-model:value="treeForm.processName" placeholder="请输入流程名称" />
           </Form.Item>
-          <Form.Item label="????" extra="???????????">
+          <Form.Item label="所属目录" extra="可选，不选择时会显示在未分类列表。">
             <Select
               v-model:value="treeForm.processCategoryId"
               allow-clear
               show-search
               :options="categorySelectOptions"
-              placeholder="?????"
+              placeholder="请选择目录"
               option-filter-prop="label"
               class="w-full"
             />
@@ -1737,19 +1842,19 @@ function onTreeSelect(keys: (number | string)[]) {
       </div>
       <div v-else-if="treeCrudMode === 'editProc'" class="flex flex-col gap-3">
         <Form layout="vertical">
-          <Form.Item label="????">
+          <Form.Item label="流程编码">
             <Input v-model:value="treeForm.processCode" disabled />
           </Form.Item>
-          <Form.Item label="????" required>
+          <Form.Item label="流程名称" required>
             <Input v-model:value="treeForm.processName" />
           </Form.Item>
-          <Form.Item label="????" extra="???????????">
+          <Form.Item label="所属目录" extra="可选，不选择时会显示在未分类列表。">
             <Select
               v-model:value="treeForm.processCategoryId"
               allow-clear
               show-search
               :options="categorySelectOptions"
-              placeholder="??????????"
+              placeholder="请选择新的所属目录"
               option-filter-prop="label"
               class="w-full"
             />
@@ -1785,6 +1890,11 @@ function onTreeSelect(keys: (number | string)[]) {
             :placeholder="'\u8bf7\u8f93\u5165\u5de5\u53f7/\u59d3\u540d\u641c\u7d22\uff0c\u5982 A8425'"
             @search="loadRuntimeStarterOptions"
           />
+        </Form.Item>
+        <Form.Item>
+          <Checkbox v-model:checked="runtimeUseDraftDefinition">
+            同时携带当前编辑中的草稿定义进入运行台
+          </Checkbox>
         </Form.Item>
       </Form>
     </Modal>

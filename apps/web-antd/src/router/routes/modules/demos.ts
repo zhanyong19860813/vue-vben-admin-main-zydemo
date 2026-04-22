@@ -111,6 +111,25 @@ const routes: RouteRecordRaw[] = [
       },
       {
         meta: {
+          icon: 'lucide:link',
+          title: '流程表单绑定',
+        },
+        name: 'WorkflowFormBinding',
+        path: '/workflow/binding',
+        component: () => import('#/views/demos/workflow-binding/index.vue'),
+      },
+      {
+        meta: {
+          icon: 'lucide:layout-dashboard',
+          title: '表单+流程一体化设计',
+          keepAlive: true,
+        },
+        name: 'FormWorkflowIntegratedDesigner',
+        path: '/workflow/form-workflow-design',
+        component: () => import('#/views/demos/form-workflow-integrated/index.vue'),
+      },
+      {
+        meta: {
           icon: 'lucide:play-circle',
           title: '发起流程',
         },
@@ -120,12 +139,69 @@ const routes: RouteRecordRaw[] = [
       },
       {
         meta: {
+          icon: 'lucide:plus-circle',
+          title: '新建流程',
+        },
+        name: 'WorkflowNewProcess',
+        path: '/workflow/new-process',
+        component: () => import('#/views/workflow/new-process/index.vue'),
+      },
+      {
+        meta: {
           icon: 'lucide:list-checks',
           title: '流程待办中心',
         },
         name: 'WorkflowTodo',
         path: '/workflow/todo',
         component: () => import('#/views/workflow/todo/index.vue'),
+      },
+      {
+        meta: {
+          icon: 'lucide:users',
+          title: '流程代办',
+        },
+        name: 'WorkflowTodoAll',
+        path: '/workflow/todo-all',
+        component: () => import('#/views/workflow/todo-all/index.vue'),
+      },
+      {
+        meta: {
+          icon: 'lucide:play-square',
+          title: '流程运行台（MVP）',
+          keepAlive: true,
+        },
+        name: 'WorkflowRuntimeMvp',
+        path: '/workflow/runtime',
+        component: () => import('#/views/workflow/runtime/index.vue'),
+      },
+      {
+        meta: {
+          icon: 'lucide:folder-tree',
+          title: '流程管理（旧）',
+        },
+        name: 'WorkflowProcessManagement',
+        path: '/workflow/process-management',
+        redirect: '/workflow/process-management-db',
+      },
+      {
+        meta: {
+          icon: 'lucide:database',
+          title: '流程管理（数据库）',
+        },
+        name: 'WorkflowProcessManagementDb',
+        path: '/workflow/process-management-db',
+        component: () =>
+          import('#/views/workflow/process-management-db/index.vue'),
+      },
+      {
+        meta: {
+          icon: 'lucide:shield-check',
+          title: '钉钉免登 Demo',
+        },
+        name: 'WorkflowDingTalkAuthDemo',
+        path: '/workflow/dingtalk-auth-demo',
+        component: () =>
+          import('#/views/workflow/dingtalk-auth-demo/index.vue'),
       },
     ],
   },
