@@ -16,5 +16,7 @@
  * ```
  */
 export { default as SelectDepartmentModal } from './SelectDepartmentModal.vue';
+export { default as SelectDeptManagerModal } from './SelectDeptManagerModal.vue';
 export { default as SelectPersonnelModal } from './SelectPersonnelModal.vue';
-export type { OrgDeptItem, OrgPersonnelItem } from './types';
+export { default as SelectRoleModal } from './SelectRoleModal.vue';
+export type { OrgDeptItem, OrgDeptManagerItem, OrgPersonnelItem, OrgRoleItem } from './types';

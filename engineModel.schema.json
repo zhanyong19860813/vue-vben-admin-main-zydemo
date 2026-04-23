@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vben.local/schema/engineModel.schema.json",
+  "title": "Workflow Engine Model Schema",
+  "type": "object",
+  "required": ["nodes", "edges", "executionPolicy", "manualIntervention"],
+  "additionalProperties": false,
+  "properties": {
+    "startNodeId": {
+      "type": "string"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/engineNode"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/engineEdge"
+      }
+    },
+    "executionPolicy": {
+      "$ref": "#/$defs/executionPolicy"
+    },
+    "manualIntervention": {
+      "$ref": "#/$defs/manualIntervention"
+    }
+  },
+  "$defs": {
+    "engineNodeType": {
+      "type": "string",
+      "enum": ["start", "approve", "condition", "cc", "end"]
+    },
+    "signMode": {
+      "type": "string",
+      "enum": ["all", "any", "sequential", "cc"]
+    },
+    "nodeFieldRule": {
+      "type": "string",
+      "enum": ["visible", "hidden", "readonly"]
+    },
+    "nodeFormBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "formCode": { "type": "string" },
+        "formName": { "type": "string" },
+        "fieldRules": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/nodeFieldRule"
+          }
+        }
+      },
+      "anyOf": [
+        { "required": ["formCode"] },
+        { "required": ["formName"] }
+      ]
+    },
+    "edgeConditionOp": {
+      "type": "string",
+      "enum": [
+        "==",
+        "!=",
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "contains",
+        "startsWith",
+        "endsWith",
+        "in",
+        "notIn",
+        "containsAny",
+        "between",
+        "not_between"
+      ]
+    },
+    "edgeFieldType": {
+      "type": "string",
+      "enum": ["string", "number", "boolean", "date"]
+    },
+    "edgeConditionRule": {
+      "type": "object",
+      "required": ["scope", "key", "op", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": ["form", "initiator"]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fieldType": {
+          "$ref": "#/$defs/edgeFieldType"
+        },
+        "op": {
+          "$ref": "#/$defs/edgeConditionOp"
+        },
+        "value": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            {
+              "type": "array",
+              "items": {
+                "oneOf": [{ "type": "string" }, { "type": "number" }]
+              }
+            }
+          ]
+        },
+        "valueTo": {
+          "oneOf": [{ "type": "string" }, { "type": "number" }]
+        }
+      }
+    },
+    "edgeConditionGroup": {
+      "type": "object",
+      "required": ["allOf"],
+      "additionalProperties": false,
+      "properties": {
+        "allOf": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/edgeConditionRule"
+          }
+        }
+      }
+    },
+    "edgeRuleGroups": {
+      "type": "object",
+      "required": ["anyOf"],
+      "additionalProperties": false,
+      "properties": {
+        "anyOf": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/edgeConditionGroup"
+          }
+        }
+      }
+    },
+    "engineEdge": {
+      "type": "object",
+      "required": ["id", "sourceNodeId", "targetNodeId", "priority"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceNodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targetNodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "desc": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "number"
+        },
+        "ruleGroups": {
+          "$ref": "#/$defs/edgeRuleGroups"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/edgeConditionRule"
+          }
+        },
+        "condition": {
+          "type": "string"
+        }
+      }
+    },
+    "headerConditionOp": {
+      "type": "string",
+      "enum": ["==", "!=", ">", ">=", "<", "<=", "between", "not_between"]
+    },
+    "headerConditionRule": {
+      "type": "object",
+      "required": ["id", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "joinWithPrev": {
+          "type": "string",
+          "enum": ["and", "or"]
+        },
+        "type": {
+          "type": "string",
+          "enum": ["form_compare", "actor_security", "actor_user"]
+        },
+        "formFieldKey": {
+          "type": "string"
+        },
+        "formFieldType": {
+          "type": "string",
+          "enum": ["string", "number", "boolean", "date"]
+        },
+        "actorSource": {
+          "type": "string",
+          "enum": ["initiator", "node"]
+        },
+        "actorNodeId": {
+          "type": "string"
+        },
+        "actorNodeLabel": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/headerConditionOp"
+        },
+        "value": {
+          "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
+        },
+        "valueTo": {
+          "oneOf": [{ "type": "string" }, { "type": "number" }]
+        },
+        "userId": {
+          "type": "string"
+        },
+        "userName": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "form_compare" }
+            }
+          },
+          "then": {
+            "required": ["formFieldKey", "formFieldType", "op", "value"],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "op": { "enum": ["between", "not_between"] }
+                  }
+                },
+                "then": {
+                  "required": ["valueTo"]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "actor_security" }
+            }
+          },
+          "then": {
+            "required": ["actorSource", "op", "value"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "actor_user" }
+            }
+          },
+          "then": {
+            "required": ["actorSource", "userId"]
+          }
+        }
+      ]
+    },
+    "approveOperatorRow": {
+      "type": "object",
+      "required": ["kind", "name", "batch", "signMode"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "refValue": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "batch": {
+          "type": "number"
+        },
+        "batchCondition": {
+          "type": "string"
+        },
+        "signMode": {
+          "$ref": "#/$defs/signMode"
+        }
+      }
+    },
+    "approveConfig": {
+      "type": "object",
+      "required": [
+        "source",
+        "batchMatchPolicy",
+        "sameBatchDispatch",
+        "sameBatchDefaultSignMode",
+        "rows"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "const": "approvalOperatorRows"
+        },
+        "batchMatchPolicy": {
+          "type": "string",
+          "const": "first_matched_stop"
+        },
+        "sameBatchDispatch": {
+          "type": "string",
+          "const": "parallel"
+        },
+        "sameBatchDefaultSignMode": {
+          "type": "string",
+          "const": "any"
+        },
+        "headerConditionText": {
+          "type": "string"
+        },
+        "headerConditionRules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/headerConditionRule"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/approveOperatorRow"
+          }
+        }
+      }
+    },
+    "engineNode": {
+      "type": "object",
+      "required": ["id", "name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "$ref": "#/$defs/engineNodeType"
+        },
+        "properties": {
+          "type": "object",
+          "properties": {
+            "formBinding": {
+              "$ref": "#/$defs/nodeFormBinding"
+            }
+          },
+          "additionalProperties": true
+        },
+        "approveConfig": {
+          "$ref": "#/$defs/approveConfig"
+        }
+      }
+    },
+    "manualRouteRule": {
+      "type": "object",
+      "required": ["id", "enabled", "fromNodeId", "forceToNodeId"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fromNodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "forceToNodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "manualIntervention": {
+      "type": "object",
+      "required": ["enabled", "rules"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/manualRouteRule"
+          }
+        }
+      }
+    },
+    "executionPolicy": {
+      "type": "object",
+      "required": ["resolverPriority", "sameBatchDefaultSignMode", "batchMatchPolicy"],
+      "additionalProperties": false,
+      "properties": {
+        "resolverPriority": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "string",
+            "enum": [
+              "manualIntervention",
+              "approverResolve",
+              "assigneeStrategies",
+              "approvalWeaverUi_view_only"
+            ]
+          }
+        },
+        "sameBatchDefaultSignMode": {
+          "type": "string",
+          "const": "any"
+        },
+        "batchMatchPolicy": {
+          "type": "string",
+          "const": "first_matched_stop"
+        }
+      }
+    }
+  }
+}

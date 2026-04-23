@@ -60,6 +60,11 @@ export interface GridColumnItem {
   hyperlink?: { hrefTemplate: string; openInNewTab?: boolean };
   /** Vxe 列汇总：与原生 aggFunc 一致 */
   aggFunc?: 'sum' | 'count' | 'avg' | 'min' | 'max' | 'first' | 'last';
+  /**
+   * 合并表头分组名（仅设计器用，不写入 vxe 子列）。
+   * 相邻数据列若此项完全相同（且非空），导出为同一父表头下的 children。
+   */
+  mergeHeaderTitle?: string;
 }
 
 /** 工具栏按钮项 */

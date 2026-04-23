@@ -13,8 +13,17 @@ const props = withDefaults(
     timelineRows?: Array<Record<string, any>>;
     allTimelineRows?: Array<Record<string, any>>;
     height?: number;
+    fitPaddingX?: number;
+    fitPaddingY?: number;
   }>(),
-  { currentNodeId: '', timelineRows: () => [], allTimelineRows: () => [], height: 260 },
+  {
+    currentNodeId: '',
+    timelineRows: () => [],
+    allTimelineRows: () => [],
+    height: 260,
+    fitPaddingX: 40,
+    fitPaddingY: 32,
+  },
 );
 
 const canvasRef = ref<HTMLElement | null>(null);
@@ -148,7 +157,7 @@ function renderGraph() {
   for (const p of historyRejectPairs) traversedPairs.add(p);
   const edges = decorateEdges(data.edges, traversedPairs);
   lf.render({ nodes, edges });
-  lf.fitView?.(40, 32);
+  lf.fitView?.(Number(props.fitPaddingX ?? 40), Number(props.fitPaddingY ?? 32));
 }
 
 onMounted(async () => {

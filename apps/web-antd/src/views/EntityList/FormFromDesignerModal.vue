@@ -6,12 +6,14 @@
  */
 import { h, ref, toRaw, watch, nextTick, computed } from 'vue';
 import { Button, message, Tag } from 'ant-design-vue';
+import { useUserStore } from '@vben/stores';
 import { useVbenForm } from '#/adapter/form';
 import { backendApi } from '#/api/constants';
 import { requestClient } from '#/api/request';
 import type { VbenFormSchema } from '#/adapter/form';
 import type { FormLinkageConfig } from '../demos/form-designer/form-designer.types';
 import { resolveDictionaryInSchema } from '../demos/form-designer/resolveDictionarySchema';
+import { buildWorkflowBuiltinValuesFromUser } from '../demos/form-designer/workflowFormRuntime';
 import FormTabsTablePreview from '../demos/form-designer/FormTabsTablePreview.vue';
 import type { TabTableConfig } from '../demos/form-designer/FormTabsTablePreview.vue';
 
@@ -37,6 +39,8 @@ const props = withDefaults(
     tabs?: TabTableConfig[];
     /** 编辑回填：传入选中行数据 */
     initialValues?: Record<string, any>;
+    /** 流程表单：流程编号前缀（与表单设计器 schema_json.workflowNoPrefix 一致） */
+    workflowNoPrefix?: string;
     /** 打开弹窗后执行的脚本，可对表单赋值。参数: params={ mode, initialValues, setTabRows, backendApi }, formApi, request */
     onOpenScript?: string;
     /** 保存前执行的脚本，可校验或修改数据。参数: params={ formValues, tabTables, tabConfigs(含 foreignKeyField/mainKeyField) }, formApi。返回 { valid: false, message } 阻止保存；返回 { formValues } 用新值提交 */
@@ -53,6 +57,8 @@ const props = withDefaults(
 );
 
 const tabsPreviewRef = ref<InstanceType<typeof FormTabsTablePreview> | null>(null);
+
+const userStore = useUserStore();
 
 const isFormTabsTable = computed(
   () =>
@@ -1027,6 +1033,15 @@ watch(
       const mapped = mapRowToSchemaFields(vals, schemaWithDefaultWidth);
       if (Object.keys(mapped).length) {
         await formApi.setValues(mapped);
+      }
+    } else {
+      /** 新增：流程表单内置字段从当前登录用户与时间填充（早于 onOpenScript，脚本可覆盖） */
+      const wf = buildWorkflowBuiltinValuesFromUser(schemaWithDefaultWidth, {
+        userInfo: userStore.userInfo as any,
+        workflowNoPrefix: props.workflowNoPrefix,
+      });
+      if (Object.keys(wf).length) {
+        await formApi.setValues(wf);
       }
     }
     await nextTick();

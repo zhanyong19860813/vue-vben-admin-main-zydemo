@@ -55,7 +55,14 @@ const COMPONENT_DEFAULTS: Record<string, Record<string, any>> = {
   TreeSelect: { treeData: [], placeholder: '请选择' },
   Mentions: { options: [], placeholder: '@提及' },
   IconPicker: {},
-  Upload: { name: 'file', action: '#', listType: 'picture-card' },
+  Upload: {
+    name: 'file',
+    action: backendApi('CommonUpload/upload'),
+    listType: 'picture-card',
+    valueType: 'url',
+    uploadDir: 'form',
+    maxCount: 1,
+  },
 };
 
 /** 组件名标准化（首字母大写） */

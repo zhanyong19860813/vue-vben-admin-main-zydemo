@@ -100,40 +100,70 @@ function normalizeUserStyleResult(
   return Object.keys(out).length ? out : undefined;
 }
 
-/** 从 grid.columns 剥离设计器字段并生成 cellStyle / rowStyle / showFooter */
+function transformColumnForEnhance(
+  col: PlainRecord,
+  cellRules: InternalRule[],
+  rowRules: InternalRule[],
+): PlainRecord {
+  if (!col) return col;
+  const t = col.type;
+  if (t === 'checkbox' || t === 'seq' || t === 'expand') {
+    return { ...col };
+  }
+  if (Array.isArray(col.children) && col.children.length > 0) {
+    return {
+      ...col,
+      children: (col.children as PlainRecord[]).map((ch) =>
+        transformColumnForEnhance(ch, cellRules, rowRules),
+      ),
+    };
+  }
+  const next: PlainRecord = { ...col };
+  delete next.mergeHeaderTitle;
+  const field = col.field as string | undefined;
+  const list = col.conditionalStyles as ColumnConditionalStyle[] | undefined;
+  if (field && Array.isArray(list)) {
+    for (const r of list) {
+      if (!r?.backgroundColor || (r.scope !== 'cell' && r.scope !== 'row')) continue;
+      const internal = { ...r, field };
+      if (r.scope === 'cell') cellRules.push(internal);
+      else rowRules.push(internal);
+    }
+  }
+  const link = col.hyperlink as ColumnHyperlink | undefined;
+  if (field && link?.hrefTemplate?.trim()) {
+    next.cellRender = {
+      name: 'SchemaHyperlink',
+      props: {
+        hrefTemplate: link.hrefTemplate.trim(),
+        openInNewTab: !!link.openInNewTab,
+      },
+    };
+  }
+  delete next.conditionalStyles;
+  delete next.hyperlink;
+  return next;
+}
+
+function columnTreeHasAgg(col: PlainRecord): boolean {
+  if (!col) return false;
+  const af = col.aggFunc;
+  if (af !== undefined && af !== null && af !== false && af !== '') return true;
+  const ch = col.children as PlainRecord[] | undefined;
+  if (Array.isArray(ch)) return ch.some(columnTreeHasAgg);
+  return false;
+}
+
+/** 从 grid.columns 剥离设计器字段并生成 cellStyle / rowStyle / showFooter（含合并表头 children） */
 export function enhanceQueryTableGrid(grid: PlainRecord | undefined): PlainRecord {
   if (!grid) return {};
   const rawCols = Array.isArray(grid.columns) ? grid.columns : [];
   const cellRules: InternalRule[] = [];
   const rowRules: InternalRule[] = [];
 
-  const columns = rawCols.map((col: PlainRecord) => {
-    if (!col || col.type) return { ...col };
-    const next: PlainRecord = { ...col };
-    const field = col.field as string | undefined;
-    const list = col.conditionalStyles as ColumnConditionalStyle[] | undefined;
-    if (field && Array.isArray(list)) {
-      for (const r of list) {
-        if (!r?.backgroundColor || (r.scope !== 'cell' && r.scope !== 'row')) continue;
-        const internal = { ...r, field };
-        if (r.scope === 'cell') cellRules.push(internal);
-        else rowRules.push(internal);
-      }
-    }
-    const link = col.hyperlink as ColumnHyperlink | undefined;
-    if (field && link?.hrefTemplate?.trim()) {
-      next.cellRender = {
-        name: 'SchemaHyperlink',
-        props: {
-          hrefTemplate: link.hrefTemplate.trim(),
-          openInNewTab: !!link.openInNewTab,
-        },
-      };
-    }
-    delete next.conditionalStyles;
-    delete next.hyperlink;
-    return next;
-  });
+  const columns = rawCols.map((col: PlainRecord) =>
+    transformColumnForEnhance(col, cellRules, rowRules),
+  );
 
   const userCellStyle = grid.cellStyle;
   const userRowStyle = grid.rowStyle;
@@ -188,9 +218,7 @@ export function enhanceQueryTableGrid(grid: PlainRecord | undefined): PlainRecor
         }
       : grid.rowStyle;
 
-  const hasAgg = columns.some(
-    (c: PlainRecord) => c?.aggFunc !== undefined && c?.aggFunc !== null && c?.aggFunc !== false && c?.aggFunc !== '',
-  );
+  const hasAgg = columns.some(columnTreeHasAgg);
   const showFooter = grid.showFooter === true || hasAgg;
 
   const footerMethod =

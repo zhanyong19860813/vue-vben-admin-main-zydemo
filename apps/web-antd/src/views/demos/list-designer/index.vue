@@ -93,7 +93,34 @@ function gridColumnItemFromSchema(c: any): GridColumnItem {
         ? { hrefTemplate: ht, openInNewTab: !!c.hyperlink?.openInNewTab }
         : { hrefTemplate: '', openInNewTab: false },
     aggFunc: c.aggFunc || undefined,
+    mergeHeaderTitle:
+      typeof c.mergeHeaderTitle === 'string' && c.mergeHeaderTitle.trim()
+        ? c.mergeHeaderTitle.trim()
+        : undefined,
   };
+}
+
+/** 将已保存的 grid.columns（含 vxe 分组 children）展开为设计器扁平列，并写入 mergeHeaderTitle */
+function expandSchemaColumnsForDesigner(cols: any[] | undefined): GridColumnItem[] {
+  const out: GridColumnItem[] = [];
+  for (const c of cols ?? []) {
+    if (!c) continue;
+    if (c.type === 'checkbox' || c.type === 'seq' || c.type === 'expand') {
+      out.push(gridColumnItemFromSchema(c));
+      continue;
+    }
+    if (Array.isArray(c.children) && c.children.length > 0) {
+      const groupTitle = String(c.title ?? '').trim() || '分组';
+      for (const ch of c.children) {
+        const item = gridColumnItemFromSchema(ch);
+        item.mergeHeaderTitle = groupTitle;
+        out.push(item);
+      }
+    } else {
+      out.push(gridColumnItemFromSchema(c));
+    }
+  }
+  return out;
 }
 
 function normalizeColumnOrders() {
@@ -189,7 +216,8 @@ function columnHasAdvancedExtras(col: GridColumnItem): boolean {
   return !!(
     col.aggFunc ||
     (col.hyperlink?.hrefTemplate && col.hyperlink.hrefTemplate.trim()) ||
-    (col.conditionalStyles && col.conditionalStyles.length > 0)
+    (col.conditionalStyles && col.conditionalStyles.length > 0) ||
+    (col.mergeHeaderTitle && col.mergeHeaderTitle.trim())
   );
 }
 const gridPageSize = ref(10);
@@ -224,6 +252,66 @@ const apiQuery = ref(backendApi('DynamicQueryBeta/queryforvben'));
 const apiDelete = ref(backendApi('DataBatchDelete/BatchDelete'));
 const apiExport = ref(backendApi('DynamicQueryBeta/ExportExcel'));
 
+/** 导出为 vxe 数据列（不含 mergeHeaderTitle） */
+function buildDataColumnSchema(c: GridColumnItem): Record<string, any> {
+  const col: Record<string, any> = {
+    field: c.field,
+    title: c.title,
+    width: c.width,
+    minWidth: c.minWidth,
+    sortable: c.sortable,
+  };
+  if (typeof c.order === 'number') col.order = c.order;
+  if (c.visible === false) col.visible = false;
+  if (c.aggFunc) col.aggFunc = c.aggFunc;
+  if (c.hyperlink?.hrefTemplate?.trim()) {
+    col.hyperlink = {
+      hrefTemplate: c.hyperlink.hrefTemplate.trim(),
+      openInNewTab: !!c.hyperlink.openInNewTab,
+    };
+  }
+  const styles = (c.conditionalStyles ?? []).filter(
+    (r) => r.backgroundColor && (r.scope === 'cell' || r.scope === 'row'),
+  );
+  if (styles.length) col.conditionalStyles = styles;
+  return col;
+}
+
+/**
+ * 按当前顺序输出 vxe columns：相邻且 mergeHeaderTitle（去空格）相同且非空的数据列合并为一组父表头。
+ */
+function buildVxeColumnsFromOrderedList(ordered: GridColumnItem[]): Record<string, any>[] {
+  const out: Record<string, any>[] = [];
+  let i = 0;
+  while (i < ordered.length) {
+    const c = ordered[i]!;
+    if (c.type === 'checkbox' || c.type === 'seq' || c.type === 'expand') {
+      out.push({
+        type: c.type,
+        width: c.width ?? (c.type === 'checkbox' ? 80 : 60),
+      });
+      i++;
+      continue;
+    }
+    const g = (c.mergeHeaderTitle ?? '').trim();
+    if (!g) {
+      out.push(buildDataColumnSchema(c));
+      i++;
+      continue;
+    }
+    const run: GridColumnItem[] = [];
+    while (i < ordered.length) {
+      const cur = ordered[i];
+      if (!cur || cur.type === 'checkbox' || cur.type === 'seq' || cur.type === 'expand') break;
+      if ((cur.mergeHeaderTitle ?? '').trim() !== g) break;
+      run.push(cur);
+      i++;
+    }
+    out.push({ title: g, children: run.map((x) => buildDataColumnSchema(x)) });
+  }
+  return out;
+}
+
 // ==================== 构建 Schema ====================
 const designedSchema = computed<QueryTableSchema>(() => {
   // 保存/预览时按 order 输出（未设置 order 的按当前顺序）
@@ -240,32 +328,8 @@ const designedSchema = computed<QueryTableSchema>(() => {
     return a.idx - b.idx;
   });
 
-  const columns = sortedForSchema.map(({ c }) => {
-    if (c.type === 'checkbox' || c.type === 'seq') {
-      return { type: c.type, width: c.width ?? (c.type === 'checkbox' ? 80 : 60) };
-    }
-    const col: Record<string, any> = {
-      field: c.field,
-      title: c.title,
-      width: c.width,
-      minWidth: c.minWidth,
-      sortable: c.sortable,
-    };
-    if (typeof (c as any).order === 'number') col.order = (c as any).order;
-    if (c.visible === false) col.visible = false;
-    if (c.aggFunc) col.aggFunc = c.aggFunc;
-    if (c.hyperlink?.hrefTemplate?.trim()) {
-      col.hyperlink = {
-        hrefTemplate: c.hyperlink.hrefTemplate.trim(),
-        openInNewTab: !!c.hyperlink.openInNewTab,
-      };
-    }
-    const styles = (c.conditionalStyles ?? []).filter(
-      (r) => r.backgroundColor && (r.scope === 'cell' || r.scope === 'row'),
-    );
-    if (styles.length) col.conditionalStyles = styles;
-    return col;
-  });
+  const ordered = sortedForSchema.map(({ c }) => c);
+  const columns = buildVxeColumnsFromOrderedList(ordered);
 
   const sortConfig: any = { remote: true };
   if (sortField.value) {
@@ -325,7 +389,7 @@ const designedSchema = computed<QueryTableSchema>(() => {
 // 预览区 key：schema 变更时强制重新挂载 QueryTable，使表格列正确更新
 const previewSchemaKey = computed(
   () =>
-    `${previewRefreshKey.value}_${tableName.value}_${gridColumns.value.length}_${treeEnabled.value ? 1 : 0}_${treeTransform.value ? 1 : 0}_${treeRowField.value}_${treeParentField.value}_${treeChildrenField.value}_${treeExpandAll.value ? 1 : 0}_${treeAccordion.value ? 1 : 0}_${gridColumns.value.map((c) => JSON.stringify({ f: c.field ?? c.type ?? '', v: c.visible === false ? 0 : 1, a: c.aggFunc ?? '', h: c.hyperlink?.hrefTemplate ?? '', t: c.hyperlink?.openInNewTab ? 1 : 0, cs: c.conditionalStyles ?? [] })).join('|')}`,
+    `${previewRefreshKey.value}_${tableName.value}_${gridColumns.value.length}_${treeEnabled.value ? 1 : 0}_${treeTransform.value ? 1 : 0}_${treeRowField.value}_${treeParentField.value}_${treeChildrenField.value}_${treeExpandAll.value ? 1 : 0}_${treeAccordion.value ? 1 : 0}_${gridColumns.value.map((c) => JSON.stringify({ f: c.field ?? c.type ?? '', m: c.mergeHeaderTitle ?? '', v: c.visible === false ? 0 : 1, a: c.aggFunc ?? '', h: c.hyperlink?.hrefTemplate ?? '', t: c.hyperlink?.openInNewTab ? 1 : 0, cs: c.conditionalStyles ?? [] })).join('|')}`,
 );
 const previewRefreshKey = ref(0);
 const queryTableRef = ref<{ gridApi?: { reload?: () => void } } | null>(null);
@@ -692,7 +756,7 @@ function loadTemplate(name: 'company' | 'employee') {
   formSubmitOnChange.value = schema.form?.submitOnChange ?? true;
 
   const cols = schema.grid?.columns ?? [];
-  gridColumns.value = cols.map((c: any) => gridColumnItemFromSchema(c));
+  gridColumns.value = expandSchemaColumnsForDesigner(cols);
   gridPageSize.value = schema.grid?.pagerConfig?.pageSize ?? 10;
   const defaultSort = schema.grid?.sortConfig?.defaultSort;
   sortField.value = defaultSort?.field ?? '';
@@ -792,7 +856,7 @@ function onSelectSavedConfig(value: string) {
     formSubmitOnChange.value = parsed.form?.submitOnChange ?? true;
 
     const cols = parsed.grid?.columns ?? [];
-    gridColumns.value = cols.map((c: any) => gridColumnItemFromSchema(c));
+    gridColumns.value = expandSchemaColumnsForDesigner(cols);
     gridPageSize.value = parsed.grid?.pagerConfig?.pageSize ?? 10;
     const defaultSort = parsed.grid?.sortConfig?.defaultSort;
     sortField.value = defaultSort?.field ?? '';
@@ -861,7 +925,7 @@ function importJson() {
     formSubmitOnChange.value = parsed.form?.submitOnChange ?? true;
 
     const cols = parsed.grid?.columns ?? [];
-    gridColumns.value = cols.map((c: any) => gridColumnItemFromSchema(c));
+    gridColumns.value = expandSchemaColumnsForDesigner(cols);
     gridPageSize.value = parsed.grid?.pagerConfig?.pageSize ?? 10;
     const defaultSort = parsed.grid?.sortConfig?.defaultSort;
     sortField.value = defaultSort?.field ?? '';
@@ -1253,7 +1317,7 @@ async function saveToDb() {
                   <Button size="small" type="primary" @click="addGridColumn">+ 数据列</Button>
                 </div>
                 <div class="text-muted-foreground mb-2 text-xs">
-                  关闭某列「表格显示」后不在列表中展示该列，行数据仍包含该字段（如 FID 供勾选行编辑）。
+                  关闭某列「表格显示」后不在列表中展示该列，行数据仍包含该字段。合并表头在列「更多」里设置相同名称（须相邻）。
                 </div>
                 <div v-for="(col, i) in gridColumns" :key="i" class="mb-2 rounded border p-2">
                   <div v-if="col.type" class="flex items-center justify-between">
@@ -1466,6 +1530,18 @@ async function saveToDb() {
         @cancel="closeColumnMore"
       >
         <div v-if="editingColumn" class="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1 text-sm">
+          <div class="rounded border border-dashed p-3">
+            <div class="mb-1 text-xs font-medium text-muted-foreground">合并表头名称</div>
+            <Input
+              v-model:value="editingColumn.mergeHeaderTitle"
+              placeholder="留空=不合并。多列填完全相同且相邻（中间无复选/序号），则共用一个父表头"
+              size="small"
+              allow-clear
+            />
+            <div class="mt-1 text-xs text-muted-foreground">
+              例如三列都填「第一段」→ 表头一行「第一段」下挂这三列。保存/预览后写入为 vxe 的列分组。
+            </div>
+          </div>
           <div>
             <div class="mb-1 text-xs font-medium text-muted-foreground">页脚汇总（基于当前页已加载数据）</div>
             <Select

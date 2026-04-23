@@ -20,11 +20,16 @@ import { useAuthStore } from '#/store';
 import { refreshTokenApi } from './core';
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
+const rawTimeout = Number(import.meta.env.VITE_HTTP_TIMEOUT_MS ?? 120000);
+/** 请求超时（毫秒），通过 VITE_HTTP_TIMEOUT_MS 调整；低配服务器建议 120000~180000 */
+const REQUEST_TIMEOUT_MS =
+  Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 120000;
 
 function createRequestClient(baseURL: string, options?: RequestClientOptions) {
   const client = new RequestClient({
     ...options,
     baseURL,
+    timeout: REQUEST_TIMEOUT_MS,
   });
 
   /**
@@ -100,8 +105,27 @@ function createRequestClient(baseURL: string, options?: RequestClientOptions) {
       }
       // 这里可以根据业务进行定制,你可以拿到 error 内的信息进行定制化处理，根据不同的 code 做不同的提示，而不是直接使用 message.error 提示 msg
       // 当前mock接口返回的错误字段是 error 或者 message
-      const responseData = error?.response?.data ?? {};
-      const errorMessage = responseData?.error ?? responseData?.message ?? '';
+      const responseData = error?.response?.data;
+      let errorMessage = '';
+      if (typeof responseData === 'string') {
+        const s = responseData.trim();
+        errorMessage = /^".*"$/.test(s) ? s.slice(1, -1) : s;
+      } else if (responseData && typeof responseData === 'object') {
+        const o = responseData as Record<string, unknown>;
+        const pick = [o.message, o.error, o.detail, o.title].find(
+          (x) => typeof x === 'string' && String(x).trim(),
+        );
+        errorMessage = pick ? String(pick) : '';
+      }
+      const isTimeout =
+        String((error as any)?.code ?? '').toUpperCase() === 'ECONNABORTED'
+        || String((error as any)?.message ?? '')
+          .toLowerCase()
+          .includes('timeout');
+      if (isTimeout) {
+        message.error(`请求超时（>${Math.round(REQUEST_TIMEOUT_MS / 1000)}秒），请稍后重试`);
+        return;
+      }
       // 如果没有错误信息，则会根据状态码进行提示
       message.error(errorMessage || msg);
     }),
@@ -114,4 +138,7 @@ export const requestClient = createRequestClient(apiURL, {
   responseReturn: 'data',
 });
 
-export const baseRequestClient = new RequestClient({ baseURL: apiURL });
+export const baseRequestClient = new RequestClient({
+  baseURL: apiURL,
+  timeout: REQUEST_TIMEOUT_MS,
+});

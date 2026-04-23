@@ -67,7 +67,8 @@ export async function executeProcedure(
   });
 }
 
-async function loadStatutoryHolidayDateSet(year: string): Promise<Set<string>> {
+/** 按公历年加载法定节假日日期集合（YYYY-MM-DD），供排班表头等展示 △ 标记 */
+export async function loadStatutoryHolidayDateSet(year: string): Promise<Set<string>> {
   const y = Number(year);
   const set = new Set<string>();
   if (!Number.isFinite(y)) return set;

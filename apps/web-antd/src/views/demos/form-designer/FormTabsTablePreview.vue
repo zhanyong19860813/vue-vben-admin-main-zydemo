@@ -3,8 +3,8 @@
  * 上表单 + 下页签表格 预览组件（也可仅渲染页签表格：showForm=false 由外层提供表单）
  * 支持：新增行、删除选中行、行内编辑
  */
-import { ref, watch } from 'vue';
-import { Button, Tabs, message } from 'ant-design-vue';
+import { nextTick, ref, watch } from 'vue';
+import { Button, Select, Space, Tabs, message } from 'ant-design-vue';
 import { useVbenForm } from '#/adapter/form';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import type { VbenFormSchema } from '#/adapter/form';
@@ -47,6 +47,9 @@ export interface TabTableColumn {
   rules?: string;
 }
 
+/** 与流程节点 formBinding.fieldRules 一致：页签列使用 `tabKey::field` */
+export type TabFieldDisplayRule = 'visible' | 'hidden' | 'readonly' | 'required';
+
 export interface TabTableConfig {
   key: string;
   tab: string;
@@ -61,6 +64,10 @@ export interface TabTableConfig {
   columns: TabTableColumn[];
 }
 
+const emit = defineEmits<{
+  'update:fieldRulesMap': [value: Record<string, TabFieldDisplayRule>];
+}>();
+
 const props = withDefaults(
   defineProps<{
     formSchema: VbenFormSchema[];
@@ -70,8 +77,31 @@ const props = withDefaults(
     wrapperClass?: string;
     layout?: string;
     labelWidth?: number;
+    /**
+     * 流程节点绑定预览：主表仍走 formSchema；页签表格列策略 key 为 `tabKey::field`。
+     * 为 true 时隐藏增删行、禁用行内编辑，并展示列策略工具条。
+     */
+    bindingPreview?: boolean;
+    /** 只读预览模式：禁用增删与编辑，不展示列策略工具条 */
+    previewReadonly?: boolean;
+    fieldRulesMap?: Record<string, TabFieldDisplayRule>;
+    /** 主表初始值（如流程内置字段示例） */
+    initialMainFormValues?: Record<string, any>;
+    /** 明细表格高度（vxe grid），默认 280 */
+    gridHeight?: number;
+    /** 紧凑模式：压缩间距/隐藏单页签 tabs 导航 */
+    compact?: boolean;
+    /** 紧凑模式下：当只有 1 个页签时是否隐藏 Tabs 导航（默认隐藏） */
+    hideSingleTabNav?: boolean;
   }>(),
-  { showForm: true },
+  {
+    showForm: true,
+    bindingPreview: false,
+    previewReadonly: false,
+    gridHeight: 280,
+    compact: false,
+    hideSingleTabNav: true,
+  },
 );
 
 const activeKey = ref(props.tabs[0]?.key ?? '');
@@ -113,6 +143,35 @@ function parseOptions(text: string): Array<{ label: string; value: string }> {
 
 function columnKey(tabKey: string, field: string) {
   return `${tabKey}::${field}`;
+}
+
+const BIND_RULE_OPTIONS: { value: TabFieldDisplayRule; label: string }[] = [
+  { value: 'visible', label: '可见' },
+  { value: 'hidden', label: '隐藏' },
+  { value: 'readonly', label: '只读' },
+  { value: 'required', label: '必填' },
+];
+
+function getColumnRuleDisplay(tabKey: string, colField: string): TabFieldDisplayRule {
+  const ck = columnKey(tabKey, colField);
+  const r = props.fieldRulesMap?.[ck] ?? props.fieldRulesMap?.[colField];
+  if (r === 'hidden' || r === 'readonly' || r === 'visible' || r === 'required') return r;
+  return 'visible';
+}
+
+function setColumnRuleDisplay(tabKey: string, colField: string, rule: TabFieldDisplayRule) {
+  const ck = columnKey(tabKey, colField);
+  emit('update:fieldRulesMap', {
+    ...(props.fieldRulesMap ?? {}),
+    [ck]: rule,
+  });
+}
+
+function onColumnRuleSelectChange(colField: string, v: unknown) {
+  const tab = props.tabs.find((t) => t.key === activeKey.value);
+  if (!tab) return;
+  const rule = v === 'hidden' || v === 'readonly' || v === 'visible' || v === 'required' ? v : 'visible';
+  setColumnRuleDisplay(tab.key, colField, rule);
 }
 
 /** 单元格存 value（编码/GUID），表格展示 label（汉字等） */
@@ -298,7 +357,14 @@ function buildGridOptions(tab: TabTableConfig, data: any[]) {
     { type: 'checkbox', width: 50 },
     { type: 'seq', width: 50 },
   ];
-  const dataColumns = (tab.columns || []).filter((col) => col.visible !== false).map((col) => {
+  const dataColumns = (tab.columns || [])
+    .filter((col) => {
+      if (col.visible === false) return false;
+      const rule = getColumnRuleDisplay(tab.key, col.field);
+      if (rule === 'hidden') return false;
+      return true;
+    })
+    .map((col) => {
     const editType = col.editType ?? 'input';
     let editRender: Record<string, any> = { name: 'input' };
     if (editType === 'input-number') {
@@ -352,6 +418,12 @@ function buildGridOptions(tab: TabTableConfig, data: any[]) {
     if (vt === 'required') {
       colDef.editRule = [{ required: true, message: col.validationMessage || `${col.title}不能为空` }];
     }
+    if (props.bindingPreview && !props.previewReadonly) {
+      const rule = getColumnRuleDisplay(tab.key, col.field);
+      colDef.className = [colDef.className, `ftab-col-rule ftab-col-rule--${rule}`]
+        .filter(Boolean)
+        .join(' ');
+    }
     return colDef;
   });
   return {
@@ -359,11 +431,11 @@ function buildGridOptions(tab: TabTableConfig, data: any[]) {
     columns: [...baseColumns, ...dataColumns],
     rowConfig: { keyField: pk },
     checkboxConfig: { checkRowKeys: [] },
-    height: 280,
+    height: Number(props.gridHeight || 280),
     editConfig: {
       trigger: 'click',
       mode: 'row',
-      enabled: true,
+      enabled: !(props.bindingPreview || props.previewReadonly),
       showStatus: true,
     },
     pagerConfig: { enabled: false },
@@ -392,11 +464,29 @@ const [Form, formApi] = useVbenForm({
 });
 
 watch(
-  () => props.formSchema,
-  async (schema) => {
-    const raw = schema ? [...schema] : [];
+  () => [props.layout, props.wrapperClass, props.labelWidth] as const,
+  () => {
+    formApi.setState({
+      layout: (props.layout as any) ?? 'horizontal',
+      wrapperClass: props.wrapperClass ?? 'grid-cols-1 md:grid-cols-2',
+      commonConfig: { labelWidth: props.labelWidth ?? 100 } as any,
+    });
+  },
+  { immediate: true },
+);
+
+/**
+ * schema 与主表初始值必须一起应用：先异步 resolveDictionary，再用「当前」initialMainFormValues setValues，
+ * 避免仅 initialMainFormValues 晚到时仍被旧空对象覆盖（新开运行台页 userInfo 未就绪时常见）。
+ */
+watch(
+  () => [props.formSchema, props.initialMainFormValues] as const,
+  async () => {
+    const raw = props.formSchema ? [...props.formSchema] : [];
     const resolved = await resolveDictionaryInSchema(raw);
     formApi.setState({ schema: resolved });
+    await nextTick();
+    await formApi.setValues({ ...(props.initialMainFormValues ?? {}) });
   },
   { immediate: true, deep: true },
 );
@@ -409,7 +499,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
 });
 
 watch(
-  [currentTab, currentData],
+  () => ({
+    tab: currentTab.value,
+    data: currentData.value,
+    rules: props.fieldRulesMap,
+    bp: props.bindingPreview,
+  }),
   () => {
     if (!currentTab.value) return;
     const opts = buildGridOptions(currentTab.value, currentData.value);
@@ -527,6 +622,28 @@ async function flushActiveGridToTabDataMap() {
 /** 保存前调用：先刷当前页签，再读全部分组数据 */
 async function flushPendingGridEdits() {
   await flushActiveGridToTabDataMap();
+}
+
+/**
+ * 流程运行台发起/办理：主表 + 页签明细一并读取（须先 flush 编辑态）
+ */
+async function getWorkflowRuntimePayload(): Promise<{
+  mainForm: Record<string, any>;
+  tabsData: Record<string, any[]>;
+}> {
+  await flushPendingGridEdits();
+  const mainForm = ((await formApi.getValues()) || {}) as Record<string, any>;
+  const tabsData = getTabDataMap();
+  return { mainForm, tabsData };
+}
+
+/** 从实例快照回填页签行（如 latestData.tabs_data_json） */
+function loadTabsDataFromObject(data: Record<string, any[]> | null | undefined) {
+  if (!data || typeof data !== 'object') return;
+  for (const k of Object.keys(data)) {
+    const rows = data[k];
+    if (Array.isArray(rows)) setTabRows(k, rows);
+  }
 }
 
 /** 供父组件保存时读取：按页签 key 分组的行数据（浅拷贝行对象） */
@@ -683,19 +800,94 @@ defineExpose({
   clearAllTabRows,
   flushPendingGridEdits,
   flushActiveGridToTabDataMap,
+  getWorkflowRuntimePayload,
+  loadTabsDataFromObject,
 });
 </script>
 
 <template>
   <div class="form-tabs-table-preview">
-    <div v-if="showForm && formSchema.length" class="mb-4">
+    <div v-if="showForm && formSchema.length" :class="props.compact ? 'mb-1' : 'mb-4'">
       <Form />
     </div>
-    <div v-if="tabs.length" :class="showForm && formSchema.length ? 'mt-4' : ''">
-      <Tabs :active-key="activeKey" type="card" @change="onTabsChange">
+    <div
+      v-if="tabs.length"
+      :class="showForm && formSchema.length ? (props.compact ? 'mt-1' : 'mt-4') : ''"
+    >
+      <!-- compact + 单页签：可选隐藏 Tabs 导航条，减少空白 -->
+      <template v-if="props.compact && props.hideSingleTabNav && tabs.length === 1 && currentTab">
+        <div :class="props.compact ? 'py-1' : 'py-2'">
+          <div
+            v-if="
+              bindingPreview &&
+              !previewReadonly &&
+              (currentTab.columns || []).filter((c) => c.visible !== false).length
+            "
+            class="ftab-bind-col-rules text-foreground/80 rounded-md border border-dashed px-2 text-xs"
+            :class="props.compact ? 'mb-1 py-1' : 'mb-2 py-2'"
+            style="border-color: hsl(var(--border))"
+          >
+            <div class="text-foreground/70 font-medium" :class="props.compact ? 'mb-1' : 'mb-1.5'">
+              本页签列表列显示策略
+            </div>
+            <Space wrap :size="[8, 6]" align="center">
+              <template
+                v-for="col in (currentTab.columns || []).filter((c) => c.visible !== false)"
+                :key="col.field"
+              >
+                <span class="text-muted-foreground shrink-0">{{ col.title || col.field }}</span>
+                <Select
+                  size="small"
+                  style="width: 96px"
+                  :value="getColumnRuleDisplay(currentTab.key, col.field)"
+                  :options="BIND_RULE_OPTIONS"
+                  @change="(v) => onColumnRuleSelectChange(col.field, v)"
+                />
+              </template>
+            </Space>
+          </div>
+          <div v-if="!(bindingPreview || previewReadonly)" class="flex gap-2" :class="props.compact ? 'mb-1' : 'mb-2'">
+            <Button size="small" type="primary" @click="addRow">新增</Button>
+            <Button size="small" danger @click="deleteRows">删除</Button>
+          </div>
+          <Grid />
+        </div>
+      </template>
+      <Tabs v-else :active-key="activeKey" type="card" @change="onTabsChange">
         <Tabs.TabPane v-for="tab in tabs" :key="tab.key" :tab="tab.tab">
-          <div class="py-2">
-            <div class="mb-2 flex gap-2">
+          <div :class="props.compact ? 'py-1' : 'py-2'">
+            <div
+              v-if="
+                bindingPreview &&
+                !previewReadonly &&
+                currentTab &&
+                currentTab.key === tab.key &&
+                (currentTab.columns || []).filter((c) => c.visible !== false).length
+              "
+              class="ftab-bind-col-rules text-foreground/80 rounded-md border border-dashed px-2 text-xs"
+              :class="props.compact ? 'mb-1 py-1' : 'mb-2 py-2'"
+              style="border-color: hsl(var(--border))"
+            >
+              <div class="text-foreground/70 font-medium" :class="props.compact ? 'mb-1' : 'mb-1.5'">
+                本页签列表列显示策略
+              </div>
+              <Space wrap :size="[8, 6]" align="center">
+                <template
+                  v-for="col in (currentTab.columns || []).filter((c) => c.visible !== false)"
+                  :key="col.field"
+                >
+                  <span class="text-muted-foreground shrink-0">{{ col.title || col.field }}</span>
+                  <Select
+                    size="small"
+                    style="width: 96px"
+                    :value="getColumnRuleDisplay(currentTab.key, col.field)"
+                    :options="BIND_RULE_OPTIONS"
+                    @change="(v) => onColumnRuleSelectChange(col.field, v)"
+                  />
+                </template>
+              </Space>
+            </div>
+            <div v-if="!(bindingPreview || previewReadonly)" class="flex gap-2" :class="props.compact ? 'mb-1' : 'mb-2'">
               <Button size="small" type="primary" @click="addRow">新增</Button>
               <Button size="small" danger @click="deleteRows">删除</Button>
             </div>
@@ -706,3 +898,27 @@ defineExpose({
     </div>
   </div>
 </template>
+
+<style scoped>
+:deep(.vxe-body--column.ftab-col-rule--visible),
+:deep(.vxe-header--column.ftab-col-rule--visible) {
+  box-shadow: inset 3px 0 0 0 hsl(var(--primary) / 0.35);
+}
+
+:deep(.vxe-body--column.ftab-col-rule--readonly),
+:deep(.vxe-header--column.ftab-col-rule--readonly) {
+  box-shadow: inset 3px 0 0 0 hsl(38 92% 50% / 0.55);
+}
+
+:deep(.vxe-body--column.ftab-col-rule--hidden),
+:deep(.vxe-header--column.ftab-col-rule--hidden) {
+  opacity: 0.5;
+  background: repeating-linear-gradient(
+    -45deg,
+    hsl(var(--muted)),
+    hsl(var(--muted)) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+</style>

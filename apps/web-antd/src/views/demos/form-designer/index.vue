@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { Page } from '@vben/common-ui';
+import { useUserStore } from '@vben/stores';
 import {
   AutoComplete,
   Button,
@@ -76,9 +77,12 @@ function mapImportedTabColumn(c: any) {
   };
 }
 import { resolveDictionaryInSchema } from './resolveDictionarySchema';
+import { buildWorkflowBuiltinValuesFromUser } from './workflowFormRuntime';
 import {
   createDefaultSchemaItem,
   FORM_COMPONENT_OPTIONS,
+  mergeWorkflowBuiltinFieldsIntoSchema,
+  type FormDesignerCategory,
   type FormDesignerSchemaItem,
   type FormLinkageConfig,
 } from './form-designer.types';
@@ -86,6 +90,8 @@ import {
   FORM_DESIGNER_BEFORE_SUBMIT_SCRIPT_EXAMPLE,
   FORM_DESIGNER_ON_OPEN_SCRIPT_EXAMPLE,
 } from './form-designer-script-examples';
+
+const userStore = useUserStore();
 
 const schemaList = ref<FormDesignerSchemaItem[]>([] as any);
 const selectedIndex = ref<number>(-1);
@@ -140,6 +146,8 @@ const dropInsertIndex = ref(-1);
 
 // 中间「表单配置」区域的页签：表单配置 / 打开时脚本 / 保存前脚本
 const activeFormTab = ref<'form' | 'onOpen' | 'beforeSubmit'>('form');
+// 左侧区域页签：布局设置 / 组件库
+const activeLeftTab = ref<'layout' | 'components'>('layout');
 
 const canvasGridClass = computed(() => {
   const cols = layoutConfig.value.cols;
@@ -201,6 +209,9 @@ function setItemLabel(index: number, value: string) {
 const formCode = ref('');
 const formTitle = ref('');
 const formListCode = ref('');
+/** 普通表单 / 流程表单（流程表单可配置编号前缀与内置字段） */
+const formCategory = ref<FormDesignerCategory>('general');
+const workflowNoPrefix = ref('WF');
 // 表单级保存实体（优先于列表上的 saveEntityName/tableName）
 const formSaveEntityName = ref('');
 const formSavedId = ref<string | null>(null);
@@ -218,6 +229,27 @@ function fillBeforeSubmitScriptExample() {
   formBeforeSubmitScript.value = FORM_DESIGNER_BEFORE_SUBMIT_SCRIPT_EXAMPLE;
   message.success('已填入「保存前脚本」示例');
 }
+
+/** 流程表单：自动带齐流程编号/姓名/工号/部门/岗位/时间戳（固定在最前，与业务字段合并） */
+function ensureWorkflowBuiltinInSchema() {
+  if (formCategory.value !== 'workflow') return;
+  const prefix = workflowNoPrefix.value?.trim() || 'WF';
+  schemaList.value = mergeWorkflowBuiltinFieldsIntoSchema(
+    schemaList.value as FormDesignerSchemaItem[],
+    prefix,
+  ) as any;
+}
+
+function applyWorkflowDefaultFields() {
+  ensureWorkflowBuiltinInSchema();
+  message.success('流程内置字段已同步');
+}
+
+watch([formCategory, workflowNoPrefix], () => {
+  if (formCategory.value === 'workflow') {
+    ensureWorkflowBuiltinInSchema();
+  }
+});
 
 // 根据保存实体从表结构一键生成字段 / 列表列
 const generatingFromTable = ref(false);
@@ -283,8 +315,11 @@ async function generateSchemaFromTable() {
       } as FormDesignerSchemaItem;
     });
     schemaList.value = next;
-    selectedIndex.value = next.length ? 0 : -1;
-    message.success(`已根据表「${name}」生成 ${next.length} 个表单字段，可在右侧继续调整`);
+    if (formCategory.value === 'workflow') {
+      ensureWorkflowBuiltinInSchema();
+    }
+    selectedIndex.value = schemaList.value.length ? 0 : -1;
+    message.success(`已根据表「${name}」生成字段，可在右侧继续调整`);
   } catch (e: any) {
     const msg = e?.response?.data?.message ?? e?.message ?? e?.data?.message ?? '从表结构生成字段失败';
     message.error(msg);
@@ -428,6 +463,8 @@ function onSelectSavedForm(value: string) {
   if (!rec?.schema_json) return;
   try {
     const parsed = JSON.parse(rec.schema_json) as {
+      formCategory?: 'general' | 'workflow';
+      workflowNoPrefix?: string;
       layout?: {
         cols?: number;
         layoutType?: string;
@@ -484,6 +521,12 @@ function onSelectSavedForm(value: string) {
       }));
     }
     selectedIndex.value = -1;
+    /* 在 schema 赋值之后设置表单类型，避免 watch 误插入流程默认字段 */
+    formCategory.value = parsed.formCategory === 'workflow' ? 'workflow' : 'general';
+    workflowNoPrefix.value =
+      typeof parsed.workflowNoPrefix === 'string' && parsed.workflowNoPrefix.trim()
+        ? parsed.workflowNoPrefix.trim()
+        : 'WF';
     message.success('已加载');
   } catch {
     message.error('解析配置失败');
@@ -648,6 +691,10 @@ const editAutoCompleteFallbackFillSameName = ref<boolean>(false);
  * 每行：field,title  （例如 name,姓名）
  */
 const editAutoCompleteDisplayColumnsText = ref<string>('');
+/** Upload 通用上传配置 */
+const editUploadDir = ref<string>('form');
+const editUploadValueType = ref<'fileList' | 'url' | 'url-array'>('url');
+const editUploadMaxCount = ref<number>(1);
 /** 字典树数据（用于选择字典分类） */
 const dictionaryTreeData = ref<any[]>([]);
 /** 界面上不显示（如主键 ID，保存时仍会提交） */
@@ -679,6 +726,7 @@ const selectedComponentNeedsTreeData = computed(() => {
 const isEditingAutoComplete = computed(() => {
   return editComponent.value === 'AutoComplete';
 });
+const isEditingUpload = computed(() => editComponent.value === 'Upload');
 
 /** 支持数据源配置（手动/数据字典）的组件 */
 const selectedComponentNeedsDataSource = computed(() => {
@@ -836,6 +884,15 @@ watch(
           editAutoCompleteDisplayColumnsText.value = '';
         editAutoCompleteFallbackFillSameName.value = false;
       }
+      editUploadDir.value = String(cp?.uploadDir ?? 'form').trim() || 'form';
+      const uploadValueType = String(cp?.valueType ?? 'url').trim();
+      editUploadValueType.value =
+        uploadValueType === 'fileList' || uploadValueType === 'url-array' || uploadValueType === 'url'
+          ? (uploadValueType as any)
+          : 'url';
+      editUploadMaxCount.value = Number.isFinite(Number(cp?.maxCount)) && Number(cp?.maxCount) > 0
+        ? Number(cp?.maxCount)
+        : 1;
 
       editHidden.value = cp?.type === 'hidden';
       editExcludeFromSubmit.value = !!(item as any).excludeFromSubmit;
@@ -880,6 +937,9 @@ watch(
       editAutoCompleteResponseMapText.value = '';
       editAutoCompleteDisplayColumnsText.value = '';
       editAutoCompleteFallbackFillSameName.value = false;
+      editUploadDir.value = 'form';
+      editUploadValueType.value = 'url';
+      editUploadMaxCount.value = 1;
     }
   },
   { immediate: true },
@@ -923,6 +983,9 @@ watch(
     editAutoCompleteResponseMapText,
     editAutoCompleteFallbackFillSameName,
     editAutoCompleteDisplayColumnsText,
+    editUploadDir,
+    editUploadValueType,
+    editUploadMaxCount,
     editHidden,
     editExcludeFromSubmit,
     editLinkageEnabled,
@@ -969,6 +1032,21 @@ watch(
       formItemClass: editFormItemClass.value || undefined,
       excludeFromSubmit: editExcludeFromSubmit.value,
     };
+    if (isEditingUpload.value) {
+      const uploadDir = editUploadDir.value.trim() || 'form';
+      const maxCount = Number(editUploadMaxCount.value);
+      compProps.uploadDir = uploadDir;
+      compProps.valueType = editUploadValueType.value || 'url';
+      if (Number.isFinite(maxCount) && maxCount > 0) {
+        compProps.maxCount = Math.floor(maxCount);
+      } else {
+        delete compProps.maxCount;
+      }
+    } else {
+      delete compProps.uploadDir;
+      delete compProps.valueType;
+      delete compProps.maxCount;
+    }
     if (editHidden.value) {
       compProps.type = 'hidden';
       updateSelectedField({
@@ -1065,6 +1143,9 @@ watch(
 const jsonInput = ref('');
 function exportJson() {
   const payload = {
+    formCategory: formCategory.value,
+    workflowNoPrefix:
+      formCategory.value === 'workflow' ? (workflowNoPrefix.value?.trim() || 'WF') : undefined,
     layout: layoutConfig.value,
     schema: schemaList.value,
     tabs: layoutConfig.value.layoutType === 'formTabsTable' ? tabsList.value : undefined,
@@ -1110,6 +1191,13 @@ function importJson() {
     if (parsed?.saveEntityName) {
       formSaveEntityName.value = parsed.saveEntityName;
     }
+    if (parsed?.formCategory === 'workflow') formCategory.value = 'workflow';
+    else formCategory.value = 'general';
+    if (parsed?.workflowNoPrefix != null && String(parsed.workflowNoPrefix).trim()) {
+      workflowNoPrefix.value = String(parsed.workflowNoPrefix).trim();
+    } else {
+      workflowNoPrefix.value = 'WF';
+    }
     if (parsed?.onOpenScript != null) formOnOpenScript.value = parsed.onOpenScript;
     if (parsed?.beforeSubmitScript != null) formBeforeSubmitScript.value = parsed.beforeSubmitScript;
     if (layout && typeof layout === 'object') {
@@ -1140,6 +1228,8 @@ function clearAll() {
   jsonInput.value = '';
   formOnOpenScript.value = '';
   formBeforeSubmitScript.value = '';
+  formCategory.value = 'general';
+  workflowNoPrefix.value = 'WF';
   message.info('已清空');
 }
 
@@ -1147,6 +1237,9 @@ function clearAll() {
 const saving = ref(false);
 function getFormSchemaPayload() {
   return {
+    formCategory: formCategory.value,
+    workflowNoPrefix:
+      formCategory.value === 'workflow' ? (workflowNoPrefix.value?.trim() || 'WF') : undefined,
     layout: layoutConfig.value,
     schema: schemaList.value,
     tabs: layoutConfig.value.layoutType === 'formTabsTable' ? tabsList.value : undefined,
@@ -1219,6 +1312,12 @@ watch(
       resolvedPreviewSchema.value = [...(list || [])];
     }
     formApi.setState({ schema: resolvedPreviewSchema.value as any });
+    await nextTick();
+    const wf = buildWorkflowBuiltinValuesFromUser(resolvedPreviewSchema.value as any, {
+      userInfo: userStore.userInfo as any,
+      workflowNoPrefix: workflowNoPrefix.value,
+    });
+    await formApi.setValues(wf);
   },
   { immediate: true, deep: true },
 );
@@ -1252,150 +1351,174 @@ onMounted(() => {
       <!-- 左侧：组件面板 + 布局设置 -->
       <div class="flex w-56 shrink-0 flex-col gap-3">
         <Card size="small">
-          <template #title>
-            <div class="flex flex-wrap items-center gap-2">
-              <span>布局设置</span>
-              <AutoComplete
-                v-model:value="configSearchValue"
-                :options="savedFormOptions"
-                :loading="loadingFormConfigs"
-                placeholder="选择已保存配置"
-                size="small"
-                class="min-w-[120px] flex-1"
-                allow-clear
-                :filter-option="() => true"
-                @search="(v) => filterFormOptions(String(v ?? ''))"
-                @select="(val: any) => onSelectSavedForm(String(val ?? ''))"
-                @focus="loadSavedFormConfigs('', true)"
-              />
-            </div>
-          </template>
-          <div class="flex flex-col gap-3">
-            <div>
-              <div class="mb-1 text-xs">表单编码 (code) <span class="text-red-500">*</span></div>
-              <Input v-model:value="formCode" placeholder="如 company_add" size="small" />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">表单标题</div>
-              <Input v-model:value="formTitle" placeholder="弹窗标题" size="small" />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">关联列表编码 (list_code)</div>
-              <Input
-                v-model:value="formListCode"
-                placeholder="与列表设计器的 code 一致，用于新增按钮弹出此表单"
-                size="small"
-              />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">保存实体 (saveEntityName)</div>
-              <Input
-                v-model:value="formSaveEntityName"
-                placeholder="如 vben_sys_operation_log；不填则用列表的 saveEntityName 或 tableName"
-                size="small"
-              />
-              <div class="mt-2 grid grid-cols-1 gap-2">
-                <Button
+          <Tabs v-model:activeKey="activeLeftTab" size="small" :destroy-inactive-tab-pane="false">
+            <Tabs.TabPane key="layout" tab="布局设置" :force-render="true">
+              <div class="mb-3">
+                <AutoComplete
+                  v-model:value="configSearchValue"
+                  :options="savedFormOptions"
+                  :loading="loadingFormConfigs"
+                  placeholder="选择已保存配置"
                   size="small"
-                  :loading="generatingFromTable"
-                  @click="generateSchemaFromTable"
+                  class="w-full"
+                  allow-clear
+                  :filter-option="() => true"
+                  @search="(v) => filterFormOptions(String(v ?? ''))"
+                  @select="(val: any) => onSelectSavedForm(String(val ?? ''))"
+                  @focus="loadSavedFormConfigs('', true)"
+                />
+              </div>
+              <div class="flex flex-col gap-3">
+                <div>
+                  <div class="mb-1 text-xs">表单编码 (code) <span class="text-red-500">*</span></div>
+                  <Input v-model:value="formCode" placeholder="如 company_add" size="small" />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">表单标题</div>
+                  <Input v-model:value="formTitle" placeholder="弹窗标题" size="small" />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">表单类型</div>
+                  <Select
+                    v-model:value="formCategory"
+                    :options="[
+                      { label: '普通表单', value: 'general' },
+                      { label: '流程表单', value: 'workflow' },
+                    ]"
+                    size="small"
+                    class="w-full"
+                  />
+                </div>
+                <div v-if="formCategory === 'workflow'">
+                  <div class="mb-1 text-xs">流程编号前缀</div>
+                  <Input v-model:value="workflowNoPrefix" placeholder="如 WF、QJ" size="small" />
+                  <Button class="mt-2 w-full" size="small" type="dashed" @click="applyWorkflowDefaultFields">
+                    同步流程内置字段
+                  </Button>
+                  <p class="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                    流程表单会自动带齐：流程编号、姓名、工号、部门、岗位、时间戳（固定在最前）；修改前缀或业务字段后也可点「同步」刷新编号示例文案。
+                  </p>
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">关联列表编码 (list_code)</div>
+                  <Input
+                    v-model:value="formListCode"
+                    placeholder="与列表设计器的 code 一致，用于新增按钮弹出此表单"
+                    size="small"
+                  />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">保存实体 (saveEntityName)</div>
+                  <Input
+                    v-model:value="formSaveEntityName"
+                    placeholder="如 vben_sys_operation_log；不填则用列表的 saveEntityName 或 tableName"
+                    size="small"
+                  />
+                  <div class="mt-2 grid grid-cols-1 gap-2">
+                    <Button
+                      size="small"
+                      :loading="generatingFromTable"
+                      @click="generateSchemaFromTable"
+                    >
+                      从表结构一键生成字段
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">布局类型</div>
+                  <Select
+                    v-model:value="layoutConfig.layoutType"
+                    :options="[
+                      { label: '纯表单（仅中间主表单）', value: 'form' },
+                      {
+                        label: '上表单 + 下页签（每页签内为可编辑表格）',
+                        value: 'formTabsTable',
+                      },
+                    ]"
+                    size="small"
+                    class="w-full"
+                  />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">栅格列数</div>
+                  <Select
+                    v-model:value="layoutConfig.cols"
+                    :options="[
+                      { label: '1 列', value: 1 },
+                      { label: '2 列', value: 2 },
+                      { label: '3 列', value: 3 },
+                      { label: '4 列', value: 4 },
+                    ]"
+                    size="small"
+                    class="w-full"
+                  />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">表单布局</div>
+                  <Select
+                    v-model:value="layoutConfig.layout"
+                    :options="[
+                      { label: '水平 (horizontal)', value: 'horizontal' },
+                      { label: '垂直 (vertical)', value: 'vertical' },
+                      { label: '行内 (inline)', value: 'inline' },
+                    ]"
+                    size="small"
+                    class="w-full"
+                  />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">标签对齐</div>
+                  <Select
+                    v-model:value="layoutConfig.labelAlign"
+                    :options="[
+                      { label: '左对齐', value: 'left' },
+                      { label: '右对齐', value: 'right' },
+                    ]"
+                    size="small"
+                    class="w-full"
+                  />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">标签宽度</div>
+                  <InputNumber
+                    v-model:value="layoutConfig.labelWidth"
+                    :min="60"
+                    :max="300"
+                    size="small"
+                    class="w-full"
+                  />
+                </div>
+                <div>
+                  <div class="mb-1 text-xs">弹窗宽度 (modalWidth)</div>
+                  <InputNumber
+                    v-model:value="layoutConfig.modalWidth"
+                    :min="360"
+                    :max="1600"
+                    size="small"
+                    class="w-full"
+                  />
+                  <div class="mt-1 text-muted-foreground text-xs">
+                    点击列表「新增/编辑」打开该表单时使用此宽度
+                  </div>
+                </div>
+              </div>
+            </Tabs.TabPane>
+            <Tabs.TabPane key="components" tab="组件库" :force-render="true">
+              <div class="text-muted-foreground mb-2 text-xs">可拖拽到表单区域</div>
+              <div class="flex flex-col gap-1">
+                <div
+                  v-for="opt in FORM_COMPONENT_OPTIONS"
+                  :key="opt.component"
+                  draggable="true"
+                  class="cursor-grab active:cursor-grabbing rounded border border-transparent px-2 py-1 text-center hover:border-primary/50 hover:bg-primary/5"
+                  @click="addField(opt.component)"
+                  @dragstart="handleDragStart($event, opt.component)"
                 >
-                  从表结构一键生成字段
-                </Button>
+                  {{ opt.label }}
+                </div>
               </div>
-            </div>
-            <div>
-              <div class="mb-1 text-xs">布局类型</div>
-              <Select
-                v-model:value="layoutConfig.layoutType"
-                :options="[
-                  { label: '纯表单（仅中间主表单）', value: 'form' },
-                  {
-                    label: '上表单 + 下页签（每页签内为可编辑表格）',
-                    value: 'formTabsTable',
-                  },
-                ]"
-                size="small"
-                class="w-full"
-              />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">栅格列数</div>
-              <Select
-                v-model:value="layoutConfig.cols"
-                :options="[
-                  { label: '1 列', value: 1 },
-                  { label: '2 列', value: 2 },
-                  { label: '3 列', value: 3 },
-                  { label: '4 列', value: 4 },
-                ]"
-                size="small"
-                class="w-full"
-              />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">表单布局</div>
-              <Select
-                v-model:value="layoutConfig.layout"
-                :options="[
-                  { label: '水平 (horizontal)', value: 'horizontal' },
-                  { label: '垂直 (vertical)', value: 'vertical' },
-                  { label: '行内 (inline)', value: 'inline' },
-                ]"
-                size="small"
-                class="w-full"
-              />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">标签对齐</div>
-              <Select
-                v-model:value="layoutConfig.labelAlign"
-                :options="[
-                  { label: '左对齐', value: 'left' },
-                  { label: '右对齐', value: 'right' },
-                ]"
-                size="small"
-                class="w-full"
-              />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">标签宽度</div>
-              <InputNumber
-                v-model:value="layoutConfig.labelWidth"
-                :min="60"
-                :max="300"
-                size="small"
-                class="w-full"
-              />
-            </div>
-            <div>
-              <div class="mb-1 text-xs">弹窗宽度 (modalWidth)</div>
-              <InputNumber
-                v-model:value="layoutConfig.modalWidth"
-                :min="360"
-                :max="1600"
-                size="small"
-                class="w-full"
-              />
-              <div class="mt-1 text-muted-foreground text-xs">
-                点击列表「新增/编辑」打开该表单时使用此宽度
-              </div>
-            </div>
-          </div>
-        </Card>
-        <Card title="组件库（可拖拽到表单区域）" size="small">
-          <div class="flex flex-col gap-1">
-            <div
-              v-for="opt in FORM_COMPONENT_OPTIONS"
-              :key="opt.component"
-              draggable="true"
-              class="cursor-grab active:cursor-grabbing rounded border border-transparent px-2 py-1 text-center hover:border-primary/50 hover:bg-primary/5"
-              @click="addField(opt.component)"
-              @dragstart="handleDragStart($event, opt.component)"
-            >
-              {{ opt.label }}
-            </div>
-          </div>
+            </Tabs.TabPane>
+          </Tabs>
         </Card>
       </div>
 
@@ -1870,6 +1993,42 @@ onMounted(() => {
               size="small"
             />
           </div>
+          <template v-if="isEditingUpload">
+            <div>
+              <div class="mb-1 text-xs">上传目录 (uploadDir)</div>
+              <Input
+                v-model:value="editUploadDir"
+                placeholder="如 form / workflow / hr"
+                size="small"
+              />
+              <div class="mt-1 text-muted-foreground text-xs">
+                文件将保存到后端 `wwwroot/uploads/{uploadDir}/年月/`
+              </div>
+            </div>
+            <div>
+              <div class="mb-1 text-xs">回写值类型 (valueType)</div>
+              <Select
+                v-model:value="editUploadValueType"
+                :options="[
+                  { label: '单个 URL 字符串 (url)', value: 'url' },
+                  { label: 'URL 数组 (url-array)', value: 'url-array' },
+                  { label: '完整文件列表 (fileList)', value: 'fileList' },
+                ]"
+                size="small"
+                class="w-full"
+              />
+            </div>
+            <div>
+              <div class="mb-1 text-xs">最大文件数 (maxCount)</div>
+              <InputNumber
+                v-model:value="editUploadMaxCount"
+                :min="1"
+                :max="20"
+                class="w-full"
+                size="small"
+              />
+            </div>
+          </template>
           <template v-if="selectedComponentNeedsDataSource">
             <div>
               <div class="mb-1 text-xs">数据源类型</div>

@@ -7,6 +7,19 @@ import { requestClient } from '#/api/request';
 
 defineOptions({ name: 'DictionaryDetailModal' });
 
+/** 网格/接口可能返回 snake_case 或 camelCase，统一成表单字段 */
+function normalizeDetailRow(row: Record<string, any>) {
+  return {
+    id: row.id ?? row.Id,
+    dictionary_id: row.dictionary_id ?? row.dictionaryId,
+    name: row.name,
+    value: row.value,
+    help_code: row.help_code ?? row.helpCode,
+    description: row.description,
+    sort: row.sort ?? 0,
+  };
+}
+
 const [Form, formApi] = useVbenForm({
   handleSubmit: onSubmit,
   schema: [
@@ -67,16 +80,17 @@ const [Modal, modalApi] = useVbenModal({
     if (isOpen) {
       const { values } = modalApi.getData<Record<string, any>>();
       if (values) {
+        const v = normalizeDetailRow(values);
         formApi.setValues({
-          id: values.id,
-          dictionary_id: values.dictionary_id,
-          name: values.name,
-          value: values.value,
-          help_code: values.help_code,
-          description: values.description,
-          sort: values.sort ?? 0,
+          id: v.id,
+          dictionary_id: v.dictionary_id,
+          name: v.name,
+          value: v.value,
+          help_code: v.help_code,
+          description: v.description,
+          sort: v.sort,
         });
-        modalApi.setState({ title: values.id ? '编辑字典项' : '新增字典项' });
+        modalApi.setState({ title: v.id ? '编辑字典项' : '新增字典项' });
       }
     }
   },
@@ -84,15 +98,16 @@ const [Modal, modalApi] = useVbenModal({
 
 async function onSubmit(values: Record<string, any>) {
   message.loading({ content: '提交中...', key: 'dict-detail-save', duration: 0 });
+  const v = normalizeDetailRow(values);
   const data: Record<string, any> = {
-    dictionary_id: values.dictionary_id,
-    name: values.name,
-    value: String(values.value),
-    help_code: values.help_code,
-    description: values.description,
-    sort: values.sort ?? 0,
+    dictionary_id: v.dictionary_id,
+    name: v.name,
+    value: String(v.value ?? ''),
+    help_code: v.help_code,
+    description: v.description,
+    sort: v.sort ?? 0,
   };
-  if (values.id) data.id = values.id;
+  if (v.id) data.id = v.id;
   try {
     const res = await requestClient.post(
       backendApi('DataSave/datasave'),
@@ -106,8 +121,13 @@ async function onSubmit(values: Record<string, any>) {
     message.success({ content: (res as any)?.message || '保存成功', key: 'dict-detail-save' });
     modalApi.close();
     (modalApi.getData() as any)?.values?.onSuccess?.();
-  } catch (e) {
-    message.error({ content: '保存失败', key: 'dict-detail-save' });
+  } catch (e: any) {
+    const msg =
+      e?.response?.data?.message
+      ?? e?.response?.data?.error
+      ?? e?.message
+      ?? '保存失败';
+    message.error({ content: String(msg), key: 'dict-detail-save' });
   }
 }
 </script>

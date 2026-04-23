@@ -55,6 +55,24 @@ function setupAccessGuard(router: Router) {
     const userStore = useUserStore();
     const authStore = useAuthStore();
 
+    // 钉钉首页绝对兜底：
+    // 某些 WebView / 缓存场景下，首次会被错误定向到 #/auth/login，
+    // 但真实路径仍是 /dingtalk/home。此时强制改回钉钉首页路由。
+    const currentPathname =
+      typeof window !== 'undefined' ? window.location.pathname.toLowerCase() : '';
+    if (currentPathname.startsWith('/dingtalk/home') && to.path === LOGIN_PATH) {
+      return {
+        path: '/dingtalk/home',
+        replace: true,
+      };
+    }
+
+    // 钉钉首页入口：允许未登录先进入页面，再由页面内部完成钉钉免登逻辑。
+    // 兼容部分入口场景下 to.name 尚未解析出来时被误拦截到登录页的问题。
+    if ((to.path || '').toLowerCase().startsWith('/dingtalk/home')) {
+      return true;
+    }
+
     // 基本路由，这些路由不需要进入权限拦截
     if (coreRouteNames.includes(to.name as string)) {
       if (to.path === LOGIN_PATH && accessStore.accessToken) {

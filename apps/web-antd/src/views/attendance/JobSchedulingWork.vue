@@ -8,7 +8,7 @@
  * 2) 点击「编辑」：弹窗里为该员工选择每天班次（BCID -> code_name）；可选班次 = 当前登录人在 v_att_lst_ShiftsSetting 的权限（与老系统一致），管理员可走班次主数据全量
  * 3) 保存到 att_lst_JobScheduling（primaryKey=FID）
  */
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   Button,
   Checkbox,
@@ -18,8 +18,10 @@ import {
   Select,
   Space,
   Table,
+  Upload,
   message,
 } from 'ant-design-vue';
+import type { UploadProps } from 'ant-design-vue';
 import type { TableColumnsType } from 'ant-design-vue';
 import dayjs from 'dayjs';
 import { useUserStore } from '@vben/stores';
@@ -27,6 +29,7 @@ import { SelectPersonnelModal } from '#/components/org-picker';
 import type { OrgPersonnelItem } from '#/components/org-picker';
 import {
   clientApplySchedulingByTime,
+  loadStatutoryHolidayDateSet,
   queryForVben,
   queryForVbenOptional,
   queryForVbenPaged,
@@ -34,6 +37,11 @@ import {
   whereAnd,
   whereOr,
 } from './shiftBcSettingApi';
+import {
+  commitJobSchedulingImport,
+  previewJobSchedulingImport,
+  type JobImportPreviewError,
+} from './jobSchedulingImportApi';
 
 const userStore = useUserStore();
 const operatorName = () => {
@@ -74,6 +82,69 @@ function jsMonthToDays(v: string) {
   if (!Number.isFinite(year) || !Number.isFinite(month)) return 31;
   return new Date(year, month, 0).getDate();
 }
+
+/** 与 JS Date.getDay() 一致：0=周日 … 6=周六 */
+const CN_WEEKDAY_CHARS = ['日', '一', '二', '三', '四', '五', '六'] as const;
+
+/** 列头：上行完整日期 YYYY-MM-DD，下行星期（法定节假日加 △，对齐老系统） */
+function renderJobSchedDayColumnTitle(
+  dayNum: number,
+  jsMonth: string,
+  holidays: Set<string>,
+) {
+  const m = jsMonth.trim();
+  if (!isValidJsMonth(m)) {
+    return h('div', { class: 'job-sched-day-th' }, [
+      h('div', { class: 'job-sched-day-th-date' }, `${dayNum}号`),
+      h('div', { class: 'job-sched-day-th-week' }, ''),
+    ]);
+  }
+  const year = Number(m.slice(0, 4));
+  const month = Number(m.slice(4, 6));
+  const dim = new Date(year, month, 0).getDate();
+  if (dayNum > dim) {
+    return h('div', { class: 'job-sched-day-th job-sched-day-th--invalid' }, [
+      h('div', { class: 'job-sched-day-th-date' }, '—'),
+      h('div', { class: 'job-sched-day-th-week' }, ''),
+    ]);
+  }
+  const dt = dayjs(new Date(year, month - 1, dayNum));
+  const ymd = dt.format('YYYY-MM-DD');
+  const wch = CN_WEEKDAY_CHARS[dt.day()];
+  const hol = holidays.has(ymd);
+  return h('div', { class: 'job-sched-day-th' }, [
+    h('div', { class: 'job-sched-day-th-date' }, ymd),
+    h('div', { class: 'job-sched-day-th-week' }, hol ? `${wch}△` : wch),
+  ]);
+}
+
+/** 与当前表格数据一致的月份（上次「查询/刷新/翻页/产生排班后刷新」成功写入 YYYYMM）。列头、节假日 △ 只跟它走，不跟输入框实时值。 */
+const gridJsMonth = ref<string>('');
+
+/** 当年法定节假日（YYYY-MM-DD），用于表头 △；随 gridJsMonth 年份拉取 */
+const statutoryHolidaySet = ref<Set<string>>(new Set());
+const headerEpoch = ref(0);
+let holidayLoadSerial = 0;
+
+watch(
+  () => gridJsMonth.value.trim(),
+  async (m) => {
+    const serial = ++holidayLoadSerial;
+    if (!isValidJsMonth(m)) {
+      if (serial === holidayLoadSerial) {
+        statutoryHolidaySet.value = new Set();
+        headerEpoch.value++;
+      }
+      return;
+    }
+    const year = m.slice(0, 4);
+    const set = await loadStatutoryHolidayDateSet(year);
+    if (serial !== holidayLoadSerial) return;
+    statutoryHolidaySet.value = set;
+    headerEpoch.value++;
+  },
+  { immediate: true },
+);
 
 const pageSize = ref(15);
 const page = ref(1);
@@ -312,6 +383,7 @@ async function loadRows(nextPage = 1) {
       Where: whereAnd(whereConds),
     });
     rows.value = res.items;
+    gridJsMonth.value = jsMonth;
     // 翻页/刷新后清空选择矩形，避免选中状态落在旧数据上
     selectionStartRowIndex.value = null;
     selectionEndRowIndex.value = null;
@@ -643,6 +715,9 @@ async function applyShiftToSelectedCells(shiftId: string) {
 function buildDayColumns(): TableColumnsType<JobRow> {
   /** 并入列 key，强制 ant-table 在选中变化时重绘单元格（仅改 customRender 常被内部缓存吃掉） */
   const ver = selectionVersion.value;
+  const hdr = headerEpoch.value;
+  const jsMonth = gridJsMonth.value;
+  const holidays = statutoryHolidaySet.value;
 
   const cols: TableColumnsType<JobRow> = [
     { title: '工号', dataIndex: 'EMP_ID', key: 'EMP_ID', fixed: 'left', width: 72 },
@@ -668,14 +743,15 @@ function buildDayColumns(): TableColumnsType<JobRow> {
     },
   ];
 
-  // 宽表：Day1_Name ~ Day31_Name
+  // 宽表：Day1_Name ~ Day31_Name（列头：年月日 + 星期，法定假日 △）
   for (let d = 1; d <= 31; d++) {
     cols.push({
-      title: `${d}号`,
-      key: `Day${d}_Name__v${ver}`,
+      title: renderJobSchedDayColumnTitle(d, jsMonth, holidays),
+      key: `Day${d}_Name__v${ver}__h${hdr}`,
       dataIndex: `Day${d}_Name`,
       width: 120,
       ellipsis: true,
+      customHeaderCell: () => ({ class: 'job-sched-th-day' }),
       // data-* / class 放在 td（拖选用 elementFromPoint）；点击事件放在内层 div，避免 vc-table 合并 td 属性时丢事件
       customCell: (record, rowIndex) => {
         const r = typeof rowIndex === 'number' && !Number.isNaN(rowIndex) ? rowIndex : -1;
@@ -740,12 +816,51 @@ function buildDayColumns(): TableColumnsType<JobRow> {
     });
   }
 
+  // 与老系统 grid 对齐：修改人、修改时间、应/上/休（视图字段 modifier / modifyTime / FulldaysValue）
+  cols.push(
+    {
+      title: '修改人',
+      key: 'modifier',
+      dataIndex: 'modifier',
+      width: 96,
+      ellipsis: true,
+      customRender: ({ text }) => {
+        const s = String(text ?? '').trim();
+        return s || '--';
+      },
+    },
+    {
+      title: '修改时间',
+      key: 'modifyTime',
+      dataIndex: 'modifyTime',
+      width: 168,
+      customRender: ({ text }) => {
+        if (text == null || text === '') return '--';
+        const d = dayjs(text as string | Date);
+        return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : String(text);
+      },
+    },
+    {
+      title: '应/上/休',
+      key: 'FulldaysValue',
+      dataIndex: 'FulldaysValue',
+      width: 112,
+      ellipsis: true,
+      customRender: ({ text }) => {
+        const s = String(text ?? '').trim();
+        return s || '--';
+      },
+    },
+  );
+
   return cols;
 }
 
 const columns = computed(() => {
-  // 选中矩形变更时强制重算 columns，让 ant-table 的 customRender 重跑
+  // 选中矩形 / 已查询月份或节假日加载后强制重算 columns，让表头与单元格 customRender 重跑
   selectionVersion.value;
+  headerEpoch.value;
+  gridJsMonth.value;
   return buildDayColumns();
 });
 
@@ -754,7 +869,8 @@ const columns = computed(() => {
 const editOpen = ref(false);
 const editSaving = ref(false);
 const editRow = ref<JobRow | null>(null);
-const editDaysInMonth = computed(() => jsMonthToDays(jsMonthInput.value));
+/** 编辑弹窗天数与当前表格月份一致（未成功查询过时为空串，按 31 天兜底） */
+const editDaysInMonth = computed(() => jsMonthToDays(gridJsMonth.value));
 
 type ShiftOpt = { value: string; label: string };
 const shiftOptions = ref<ShiftOpt[]>([]);
@@ -908,6 +1024,107 @@ onBeforeUnmount(() => {
   if (onDocClickHandler) window.removeEventListener('click', onDocClickHandler);
   stopDragSelection();
 });
+
+// -------------------- Excel 导入（老系统 Import_TMP + CheckFunction + Procedure） --------------------
+
+const importOpen = ref(false);
+const importFileList = ref<UploadProps['fileList']>([]);
+const importErrors = ref<JobImportPreviewError[]>([]);
+const importCanCommit = ref(false);
+const importPreviewing = ref(false);
+const importCommitting = ref(false);
+const importRowCount = ref(0);
+/** 模板示意图加载失败时显示占位说明（可将老系统 JobScheduling.png 放到 public/.../template-preview.png） */
+const importTemplatePreviewOk = ref(true);
+
+const importPublicBase = computed(() => {
+  const b = import.meta.env.BASE_URL || '/';
+  return b.endsWith('/') ? b : `${b}/`;
+});
+const jobSchedulingTemplateDownloadUrl = computed(
+  () => `${importPublicBase.value}attendance/job-scheduling/JobScheduling.xls`,
+);
+const jobSchedulingTemplatePreviewUrl = computed(
+  () => `${importPublicBase.value}attendance/job-scheduling/template-preview.png`,
+);
+
+const importSelectedFileName = computed(() => {
+  const raw = importFileList.value?.[0];
+  if (!raw) return '';
+  return String((raw as any).name ?? '').trim();
+});
+
+watch(importOpen, (open) => {
+  if (open) importTemplatePreviewOk.value = true;
+});
+
+const importErrorColumns = [
+  { title: '项目', dataIndex: 'itemName', key: 'itemName', ellipsis: true, width: 120 },
+  { title: '明细', dataIndex: 'itemDetail', key: 'itemDetail', ellipsis: true, width: 160 },
+  { title: '原因', dataIndex: 'reason', key: 'reason', ellipsis: true },
+];
+
+function openImportModal() {
+  importFileList.value = [];
+  importErrors.value = [];
+  importCanCommit.value = false;
+  importRowCount.value = 0;
+  importOpen.value = true;
+}
+
+const importBeforeUpload: UploadProps['beforeUpload'] = () => false;
+
+async function runImportPreview() {
+  const raw = importFileList.value?.[0];
+  const f = (raw && 'originFileObj' in raw ? raw.originFileObj : undefined) as File | undefined;
+  if (!f) {
+    message.warning('请选择 Excel 文件（.xls / .xlsx）');
+    return;
+  }
+  const opEmp = resolveOperatorEmpId();
+  if (!opEmp) {
+    message.warning('当前账号未绑定工号，无法校验班次权限，请先在用户信息中维护工号');
+    return;
+  }
+  importPreviewing.value = true;
+  importErrors.value = [];
+  importCanCommit.value = false;
+  try {
+    const data = await previewJobSchedulingImport(f, operatorName(), opEmp);
+    importRowCount.value = data.rowCount;
+    importCanCommit.value = data.canCommit;
+    importErrors.value = data.errors ?? [];
+    if (data.canCommit) {
+      message.success(`校验通过，共 ${data.rowCount} 行，请点击「确认导入」写入正式表`);
+    } else if (importErrors.value.length) {
+      message.warning(`校验未通过，共 ${importErrors.value.length} 条问题`);
+    } else {
+      message.warning('未写入临时表或校验失败，请检查文件内容');
+    }
+  } catch (e: any) {
+    message.error(e?.message || '预览校验失败');
+  } finally {
+    importPreviewing.value = false;
+  }
+}
+
+async function runImportCommit() {
+  if (!importCanCommit.value) {
+    message.warning('请先完成预览且校验通过');
+    return;
+  }
+  importCommitting.value = true;
+  try {
+    await commitJobSchedulingImport(operatorName());
+    message.success('导入成功');
+    importOpen.value = false;
+    await loadRows(page.value);
+  } catch (e: any) {
+    message.error(e?.message || '确认导入失败');
+  } finally {
+    importCommitting.value = false;
+  }
+}
 </script>
 
 <template>
@@ -935,6 +1152,7 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="query-actions">
+          <Button class="query-btn" @click="openImportModal">导入</Button>
           <Button class="query-btn" @click="openGenerateModal">产生排班</Button>
           <Button class="query-btn" type="primary" :loading="loading" @click="loadRows(1)">
             查询
@@ -960,7 +1178,7 @@ onBeforeUnmount(() => {
           showSizeChanger: false,
           onChange: (p: number) => loadRows(p),
         }"
-        :scroll="{ x: 4200, y: 620 }"
+        :scroll="{ x: 4600, y: 620 }"
       />
     </div>
 
@@ -987,6 +1205,90 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </div>
+
+    <Modal
+      :open="importOpen"
+      title="导入排班"
+      width="960px"
+      :footer="null"
+      destroy-on-close
+      @cancel="importOpen = false"
+    >
+      <div class="import-modal-body">
+        <p class="import-hint">
+          与老系统一致：表内需含 <b>工号</b>；<b>月份</b>（YYYYMM）或带日期的列头（如 2026-04-01，将自动对应到当月「几号」列）；每日班次填
+          <b>D1～D31</b> 或日期列，值为班次名称（与 <code>att_lst_BC_set_code.code_name</code> 一致）。空单元格视为休息。
+        </p>
+        <div class="import-file-row">
+          <span class="import-file-label">请选择Excel：</span>
+          <Input
+            class="import-file-input"
+            readonly
+            :value="importSelectedFileName"
+            placeholder="未选择文件"
+          />
+          <Upload
+            v-model:file-list="importFileList"
+            :max-count="1"
+            accept=".xlsx,.xls"
+            :before-upload="importBeforeUpload"
+            :show-upload-list="false"
+          >
+            <Button type="primary">选择文件</Button>
+          </Upload>
+          <a
+            class="import-template-download"
+            :href="jobSchedulingTemplateDownloadUrl"
+            download="JobScheduling.xls"
+          >
+            点击下载模板
+          </a>
+        </div>
+        <div class="import-template-preview-wrap">
+          <img
+            v-show="importTemplatePreviewOk"
+            class="import-template-preview-img"
+            :src="jobSchedulingTemplatePreviewUrl"
+            alt="排班导入模板示意图"
+            @error="importTemplatePreviewOk = false"
+          />
+          <div v-show="!importTemplatePreviewOk" class="import-preview-fallback">
+            未找到示意图（可选）：将说明图片命名为
+            <code>template-preview.png</code>
+            放到
+            <code>public/attendance/job-scheduling/</code>
+            即可在此显示；填写方式见上方说明或已下载的 Excel 模板。
+          </div>
+        </div>
+        <Space style="margin-top: 14px">
+          <Button type="primary" :loading="importPreviewing" @click="runImportPreview">
+            预览校验
+          </Button>
+          <Button
+            type="primary"
+            ghost
+            :disabled="!importCanCommit"
+            :loading="importCommitting"
+            @click="runImportCommit"
+          >
+            确认导入
+          </Button>
+        </Space>
+        <div v-if="importRowCount > 0 && importCanCommit" class="import-summary">
+          已通过校验：<b>{{ importRowCount }}</b> 行（临时表已就绪，确认后写入 <code>att_lst_JobScheduling</code>）
+        </div>
+        <div v-if="importErrors.length" class="import-errors-wrap">
+          <div class="import-errors-title">校验问题（{{ importErrors.length }}）</div>
+          <Table
+            size="small"
+            :columns="importErrorColumns"
+            :data-source="importErrors.map((e, i) => ({ key: i, ...e }))"
+            :pagination="{ pageSize: 8 }"
+            :scroll="{ y: 280 }"
+          />
+        </div>
+      </div>
+    </Modal>
 
     <Modal
       :open="editOpen"
@@ -1202,6 +1504,42 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+/* 日期列列头：双行 + 浅渐变（对齐老系统排班表） */
+.table-card :deep(.ant-table-thead > tr > th.job-sched-th-day) {
+  vertical-align: middle;
+  padding: 8px 6px !important;
+  background: linear-gradient(180deg, #ebebeb 0%, #f7f7f7 55%, #fafafa 100%);
+  text-align: center;
+}
+
+.table-card :deep(.job-sched-day-th) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1.2;
+  min-height: 36px;
+}
+
+.table-card :deep(.job-sched-day-th-date) {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+  white-space: nowrap;
+}
+
+.table-card :deep(.job-sched-day-th-week) {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+}
+
+.table-card :deep(.job-sched-day-th--invalid .job-sched-day-th-date) {
+  color: rgba(0, 0, 0, 0.22);
+  font-weight: 500;
+}
+
 /* 左侧信息列仍可整行浅灰 hover；日期列单独处理，避免与「矩形选中」混淆成整行选中 */
 .table-card :deep(.ant-table-tbody > tr:hover > td:not(.job-sched-day-cell)) {
   background: rgba(0, 0, 0, 0.02);
@@ -1321,6 +1659,86 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: rgba(0, 0, 0, 0.65);
   margin-bottom: 6px;
+}
+
+.import-modal-body {
+  padding: 4px 0 8px;
+}
+
+.import-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.import-file-label {
+  flex: 0 0 auto;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.85);
+}
+
+.import-file-input {
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+
+.import-template-download {
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+
+.import-template-preview-wrap {
+  min-height: 220px;
+  max-height: 360px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.02);
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.import-template-preview-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  vertical-align: top;
+}
+
+.import-preview-fallback {
+  padding: 20px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.55);
+  text-align: center;
+}
+
+.import-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.import-summary {
+  margin-top: 14px;
+  font-size: 13px;
+  color: rgba(24, 144, 255, 0.95);
+}
+
+.import-errors-wrap {
+  margin-top: 16px;
+}
+
+.import-errors-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: rgba(0, 0, 0, 0.75);
 }
 </style>
 

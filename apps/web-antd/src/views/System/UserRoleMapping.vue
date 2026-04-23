@@ -23,7 +23,7 @@ import {
   prompt,
   useVbenModal,
 } from '@vben/common-ui';
-import AddRoleFormModel from './AddRole.vue';
+import AddRoleFormModel from './UserRoleMapping/AddRole.vue';
 import {
   Alert,
   Tabs,

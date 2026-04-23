@@ -115,6 +115,8 @@ interface WfMgmtExitTableRow {
 const emit = defineEmits<{
   graphDataChange: [rows: WfMgmtNodeTableRow[]];
   graphExitDataChange: [rows: WfMgmtExitTableRow[]];
+  /** LogicFlow 已就绪（嵌入流程管理时用于消除与父级 apply 的竞态） */
+  canvasReady: [];
 }>();
 
 const processName = ref('请假审批流程（LogicFlow）');
@@ -1036,7 +1038,12 @@ function updateEdgeHoverTip(edgeId: string, evt?: any) {
 }
 
 function initLogicFlow(data?: any) {
-  if (!canvasRef.value) return;
+  if (!canvasRef.value) {
+    void nextTick(() => {
+      if (canvasRef.value) initLogicFlow(data);
+    });
+    return;
+  }
   lf = new LogicFlow({
     container: canvasRef.value,
     grid: {
@@ -1115,6 +1122,7 @@ function initLogicFlow(data?: any) {
   lf.on('graph:transform', () => refreshTransformUi());
   refreshTransformUi();
   updateGraphStats();
+  if (props.embedded) emit('canvasReady');
 }
 
 function addNode(type: string) {
@@ -1837,10 +1845,20 @@ function applyWorkflowDraftFromObject(parsed: Record<string, unknown> | null): b
       const n = Number(parsed.processVersion);
       if (Number.isFinite(n) && n >= 1) processVersion.value = Math.floor(n);
     }
-    const gd = parsed.graphData as { nodes?: unknown[] } | undefined;
-    if (gd?.nodes) {
-      ensureGraphNodeStyles(gd);
-      lf.render(gd);
+    const gdRaw = (parsed.graphData ?? parsed.graph) as
+      | { nodes?: unknown[]; edges?: unknown[] }
+      | undefined;
+    const hasGraphSlot = !!(parsed as { graphData?: unknown }).graphData ||
+      !!(parsed as { graph?: unknown }).graph;
+    if (hasGraphSlot && !Array.isArray(gdRaw?.nodes)) {
+      return false;
+    }
+    if (gdRaw && Array.isArray(gdRaw.nodes)) {
+      ensureGraphNodeStyles(gdRaw);
+      lf.render({
+        nodes: gdRaw.nodes,
+        edges: Array.isArray(gdRaw.edges) ? gdRaw.edges : [],
+      });
       scheduleFitGraphToView();
       updateGraphStats();
     }

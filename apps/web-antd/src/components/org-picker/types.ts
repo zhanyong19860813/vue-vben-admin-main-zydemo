@@ -13,3 +13,18 @@ export type OrgPersonnelItem = {
   deptName?: string;
   dutyName?: string;
 };
+
+/** 角色选择结果（系统角色） */
+export type OrgRoleItem = {
+  id: string;
+  name: string;
+};
+
+/** 部门主管范围选择结果（选择部门范围，运行时按部门取主管） */
+export type OrgDeptManagerItem = {
+  deptId: string;
+  deptName: string;
+  parentId: string | null;
+  managerEmpIds?: string[];
+  managerNames?: string[];
+};

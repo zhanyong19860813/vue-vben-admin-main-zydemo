@@ -35,6 +35,51 @@ const menuId = computed(
     ((route.meta?.query as Record<string, string>)?.['menuid'] ?? route.query?.menuid) as string,
 );
 
+/**
+ * 列表设计器历史数据里常带绝对 URL（如 http://127.0.0.1:5155/api/...）。
+ * 这里统一改写为当前环境 backendApi，避免迁移服务器后仍打旧端口。
+ */
+function rewriteDesignerApiUrl(url?: string): string {
+  const raw = String(url ?? '').trim();
+  if (!raw) return raw;
+
+  // 绝对地址：提取 /api/ 后半段并拼接到当前 BACKEND_API_BASE
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const marker = '/api/';
+      const idx = u.pathname.toLowerCase().indexOf(marker);
+      if (idx >= 0) {
+        const apiPath = u.pathname.slice(idx + marker.length);
+        return backendApi(apiPath);
+      }
+      // 非 /api 路径的绝对地址（第三方接口）保持原样
+      return raw;
+    } catch {
+      return raw;
+    }
+  }
+
+  // 相对路径：去掉前缀 /api 后重拼
+  if (raw.startsWith('/api/')) return backendApi(raw.slice('/api/'.length));
+  if (raw === '/api') return backendApi('');
+  if (raw.startsWith('/')) return backendApi(raw.slice(1));
+  return backendApi(raw);
+}
+
+function normalizeDesignerSchemaApi(parsed: QueryTableSchema): QueryTableSchema {
+  if (!parsed?.api) return parsed;
+  return {
+    ...parsed,
+    api: {
+      ...parsed.api,
+      query: rewriteDesignerApiUrl(parsed.api.query),
+      delete: rewriteDesignerApiUrl(parsed.api.delete),
+      export: rewriteDesignerApiUrl(parsed.api.export),
+    },
+  };
+}
+
 async function loadSchema() {
   if (!entityName.value?.trim()) {
     schema.value = null;
@@ -70,7 +115,8 @@ async function loadSchema() {
       return;
     }
 
-    const parsed = JSON.parse(first.schema_json) as QueryTableSchema;
+    const parsedRaw = JSON.parse(first.schema_json) as QueryTableSchema;
+    const parsed = normalizeDesignerSchemaApi(parsedRaw);
 
     // 根据当前用户权限过滤按钮（需配置 menuid）
     let allowedKeys = new Set<string>();

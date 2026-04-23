@@ -7,10 +7,25 @@ import { overridesPreferences } from './preferences';
 // import 'ant-design-vue/dist/antd.css';
  
 
+function normalizeDingTalkHomeEntry() {
+  if (typeof window === 'undefined') return;
+  const { pathname, hash, search, origin } = window.location;
+  if (!pathname.toLowerCase().startsWith('/dingtalk/home')) return;
+
+  // 直接访问 /dingtalk/home 时（无 hash 路由），强制落到移动端首页路由，
+  // 避免被根路由重定向到默认首页（如 /analytics）。
+  if (!hash || hash === '#' || hash === '#/' || hash === '#/analytics') {
+    const target = `${origin}${pathname}${search}#/dingtalk/home`;
+    window.location.replace(target);
+  }
+}
+
 /**
  * 应用初始化完成之后再进行页面加载渲染
  */
 async function initApplication() {
+  normalizeDingTalkHomeEntry();
+
   // name用于指定项目唯一标识
   // 用于区分不同项目的偏好设置以及存储数据的key前缀以及其他一些需要隔离的数据
   const env = import.meta.env.PROD ? 'prod' : 'dev';

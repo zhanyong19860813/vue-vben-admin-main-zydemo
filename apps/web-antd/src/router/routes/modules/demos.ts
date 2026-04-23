@@ -103,7 +103,7 @@ const routes: RouteRecordRaw[] = [
       {
         meta: {
           icon: 'lucide:workflow',
-          title: '流程设计器（静态）',
+          title: '流程设计器（静态/旧链路）',
         },
         name: 'WorkflowDesignerDemo',
         path: '/workflow/designer',
@@ -112,7 +112,7 @@ const routes: RouteRecordRaw[] = [
       {
         meta: {
           icon: 'lucide:link',
-          title: '流程表单绑定',
+          title: '流程表单绑定（旧链路）',
         },
         name: 'WorkflowFormBinding',
         path: '/workflow/binding',
@@ -131,7 +131,7 @@ const routes: RouteRecordRaw[] = [
       {
         meta: {
           icon: 'lucide:play-circle',
-          title: '发起流程',
+          title: '发起流程（旧链路）',
         },
         name: 'WorkflowStart',
         path: '/workflow/start',
@@ -149,7 +149,7 @@ const routes: RouteRecordRaw[] = [
       {
         meta: {
           icon: 'lucide:list-checks',
-          title: '流程待办中心',
+          title: '流程待办中心（旧链路）',
         },
         name: 'WorkflowTodo',
         path: '/workflow/todo',

@@ -15,6 +15,7 @@ import FormTabsTableContent from '#/components/FormTabsTableModal/FormTabsTableC
 import FormFromDesignerModal from '#/views/EntityList/FormFromDesignerModal.vue';
 import type { TabTableItem } from '#/components/FormTabsTableModal/types';
 import axios from 'axios';
+import dayjs from 'dayjs';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { backendApi } from '#/api/constants';
 import { recordOperationLog } from '#/api/operationLog';
@@ -25,6 +26,35 @@ import { enhanceQueryTableGrid } from './queryTableGridEnhance';
 import { normalizeDesignerGridAggFunc } from './normalizeDesignerGridAggFunc';
 
 /** 默认铺满内容区高度、表体内部滚动；schema.grid.fillViewportHeight === false 时使用原 height/maxHeight */
+/** 将表单值转为接口 SimpleWhere；RangePicker 拆成 field_gte / field_lte（与 StoneApi MapSimpleWhereToWhereNode 约定一致） */
+function formValuesToSimpleWhere(
+  formValues: Record<string, any> | undefined,
+  formSchema: any[] | undefined,
+): Record<string, string> {
+  const schema = Array.isArray(formSchema) ? formSchema : [];
+  const rangeMeta = new Map<string, { valueFormat?: string }>();
+  for (const s of schema) {
+    if (s?.component === 'RangePicker' && s?.fieldName) {
+      rangeMeta.set(s.fieldName, { valueFormat: s?.componentProps?.valueFormat });
+    }
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(formValues || {})) {
+    if (v === undefined || v === null || v === '') continue;
+    const range = rangeMeta.get(k);
+    if (range && Array.isArray(v)) {
+      const fmt = range.valueFormat || 'YYYY-MM-DD';
+      const start = v[0] != null && v[0] !== '' ? dayjs(v[0]).format(fmt) : '';
+      const end = v[1] != null && v[1] !== '' ? dayjs(v[1]).format(fmt) : '';
+      if (start) out[`${k}_gte`] = start;
+      if (end) out[`${k}_lte`] = end;
+      continue;
+    }
+    out[k] = String(v);
+  }
+  return out;
+}
+
 function prepareQueryTableGrid(grid: Record<string, any> | undefined) {
   const merged = enhanceQueryTableGrid(normalizeDesignerGridAggFunc(grid ?? {}));
   if (merged.fillViewportHeight === false) {
@@ -33,6 +63,16 @@ function prepareQueryTableGrid(grid: Record<string, any> | undefined) {
   }
   const { height: _h, maxHeight: _m, fillViewportHeight: _f, ...rest } = merged;
   return rest;
+}
+
+/** 兼容 schema.api 里写了 /api 前缀，避免与 requestClient(baseURL=/api) 叠加成 /api/api */
+function normalizeApiPath(url?: string): string {
+  const s = String(url ?? '').trim();
+  if (!s) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith('/api/')) return s.slice('/api/'.length);
+  if (s === '/api') return '';
+  return s.startsWith('/') ? s.slice(1) : s;
 }
 
 import { getCurrentInstance } from 'vue'
@@ -100,14 +140,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async ({ page, sort }, formValues) => {
-          const cleanWhere = Object.fromEntries(
-            Object.entries(formValues || {}).filter(
-              ([_, v]) => v !== undefined && v !== null && v !== ''
-            )
-          );
+          const formSchema =
+            resolvedFormOptions.value?.schema ?? props.schema.form?.schema ?? [];
+          const cleanWhere = formValuesToSimpleWhere(formValues, formSchema);
           currentQuery.value = cleanWhere;
 
-          return requestClient.post(props.schema.api.query, {
+          return requestClient.post(normalizeApiPath(props.schema.api.query), {
             TableName: props.schema.tableName,
             Page: page.currentPage,
             PageSize: page.pageSize,
@@ -129,6 +167,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
 
 /** 页签打开后等价于点一次「收起」：须在 Grid mount 且注入 formApi 之后再调，成功后才标记完成 */
 let queryFormDefaultCollapsedDone = false;
+/** 是否已对本表执行过一次 setState(collapsed:true)；用于避免重试定时器与用户点「展开」打架 */
+let queryFormAutoCollapseApplied = false;
 let queryFormCollapseRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearQueryFormCollapseRetry() {
@@ -139,14 +179,24 @@ function clearQueryFormCollapseRetry() {
 }
 
 function tryApplyQueryFormCollapsed(): boolean {
-  const api = gridApi.formApi as { setState?: (s: Record<string, unknown>) => void } | undefined;
+  const api = gridApi.formApi as unknown as {
+    setState?: (s: Record<string, unknown>) => void;
+    getState?: () => { collapsed?: boolean } | null;
+  } | undefined;
   if (typeof api?.setState !== 'function') return false;
+
+  const collapsedNow = api.getState?.()?.collapsed;
+  if (queryFormAutoCollapseApplied && collapsedNow === false) {
+    return true;
+  }
+
   api.setState({ collapsed: true });
+  queryFormAutoCollapseApplied = true;
   nextTick(scheduleApplyQueryTableGridHeight);
   return true;
 }
 
-/** 等当前渲染周期与 VxeGrid 挂载后再试；失败则短时重试，避免过早调用无效 */
+/** 等 Grid / formApi 就绪后再收起；短重试，无 150ms+ 多级延时，避免点「展开」后仍被定时器拉回收起 */
 function scheduleQueryFormDefaultCollapse() {
   if (queryFormDefaultCollapsedDone) return;
   const schema = resolvedFormOptions.value?.schema;
@@ -155,8 +205,8 @@ function scheduleQueryFormDefaultCollapse() {
   clearQueryFormCollapseRetry();
 
   let attempts = 0;
-  const maxAttempts = 40;
-  const intervalMs = 80;
+  const maxAttempts = 24;
+  const intervalMs = 50;
 
   const step = () => {
     if (queryFormDefaultCollapsedDone) {
@@ -177,15 +227,7 @@ function scheduleQueryFormDefaultCollapse() {
   };
 
   nextTick(() => {
-    nextTick(() => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          setTimeout(() => {
-            setTimeout(step, 150);
-          }, 0);
-        });
-      });
-    });
+    requestAnimationFrame(step);
   });
 }
 
@@ -193,6 +235,7 @@ watch(
   () => props.schema.tableName,
   () => {
     queryFormDefaultCollapsedDone = false;
+    queryFormAutoCollapseApplied = false;
     clearQueryFormCollapseRetry();
   },
 );
@@ -213,7 +256,9 @@ const fillViewportEnabled = computed(
 
 const layoutRef = ref<HTMLElement | null>(null);
 let layoutResizeObserver: ResizeObserver | null = null;
+/** 双 RAF：先让查询区展开完成绘制，再测高 + Vxe recalculate，避免大表（如考勤日结果）抢点击同一帧 */
 let layoutRaf = 0;
+let layoutRaf2 = 0;
 /** FormTabsTable 弹窗实例，卸载时销毁 */
 let formTabsTableModalInstance: any = null;
 
@@ -243,9 +288,13 @@ function applyQueryTableGridViewportHeight() {
 
 function scheduleApplyQueryTableGridHeight() {
   cancelAnimationFrame(layoutRaf);
+  cancelAnimationFrame(layoutRaf2);
   layoutRaf = requestAnimationFrame(() => {
     layoutRaf = 0;
-    applyQueryTableGridViewportHeight();
+    layoutRaf2 = requestAnimationFrame(() => {
+      layoutRaf2 = 0;
+      applyQueryTableGridViewportHeight();
+    });
   });
 }
 
@@ -269,12 +318,21 @@ onBeforeUnmount(() => {
   layoutResizeObserver = null;
   window.removeEventListener('resize', scheduleApplyQueryTableGridHeight);
   cancelAnimationFrame(layoutRaf);
+  cancelAnimationFrame(layoutRaf2);
 });
 
 watch(
-  () => [fillViewportEnabled.value, resolvedFormOptions.value, props.schema?.grid],
+  () => [
+    fillViewportEnabled.value,
+    resolvedFormOptions.value?.schema,
+    resolvedFormOptions.value?.collapsed,
+    resolvedFormOptions.value?.submitOnChange,
+    (props.schema?.grid as Record<string, unknown> | undefined)?.maxHeight,
+    (props.schema?.grid as Record<string, unknown> | undefined)?.height,
+    (props.schema?.grid as Record<string, unknown> | undefined)?.fillViewportHeight,
+  ],
   () => nextTick(scheduleApplyQueryTableGridHeight),
-  { deep: true },
+  { flush: 'post' },
 );
 
 /**
@@ -360,18 +418,32 @@ async function openFormFromDesignerModal(
     return;
   }
   const parsed = JSON.parse(rec.schema_json) as {
-    layout?: { cols?: number; labelWidth?: number; labelAlign?: string };
+    layout?: {
+      cols?: number;
+      labelWidth?: number;
+      labelAlign?: string;
+      layout?: string;
+      layoutType?: string;
+      modalWidth?: number;
+      wrapperClass?: string;
+      formItemGapPx?: number;
+    };
     schema?: any[];
+    tabs?: any[];
+    workflowNoPrefix?: string;
+    onOpenScript?: string;
+    beforeSubmitScript?: string;
   };
   const formSchema = Array.isArray(parsed?.schema) ? parsed.schema : [];
   const saveEntityName = props.schema.saveEntityName ?? props.schema.tableName ?? '';
   const primaryKey = props.schema.primaryKey ?? 'id';
+  const modalWidth = parsed.layout?.modalWidth ?? 640;
 
   let modalInstance: any = null;
   modalInstance = Modal.confirm({
     title: options?.title ?? rec.title ?? '表单',
     icon: null,
-    width: 640,
+    width: modalWidth,
     footer: null,
     content: () => {
       const vnode = h(FormFromDesignerModal, {
@@ -380,7 +452,11 @@ async function openFormFromDesignerModal(
         primaryKey,
         formTitle: rec.title ?? '表单',
         layout: parsed.layout,
+        tabs: Array.isArray(parsed.tabs) ? parsed.tabs : undefined,
         initialValues: options?.initialValues,
+        workflowNoPrefix: parsed.workflowNoPrefix,
+        onOpenScript: parsed.onOpenScript,
+        beforeSubmitScript: parsed.beforeSubmitScript,
         onSuccess: () => {
           modalInstance?.destroy?.();
           gridApi.reload();
@@ -490,7 +566,7 @@ async function handleDelete() {
     title: '确认删除',
     content: `确认删除选中的 ${rows.length} 条数据？`,
     async onOk() {
-      await axios.post(props.schema.api.delete, [
+      await axios.post(normalizeApiPath(props.schema.api.delete), [
         {
           tablename: deleteEntityName,
           key: primaryKey,
@@ -523,7 +599,7 @@ async function handleExport() {
     .join(',');
 
   const res = await axios.post(
-    props.schema.api.export,
+    normalizeApiPath(props.schema.api.export),
     {
       TableName: props.schema.tableName,
       SimpleWhere: currentQuery.value,

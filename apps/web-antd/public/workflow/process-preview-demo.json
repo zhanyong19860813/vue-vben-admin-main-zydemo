@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "processNo": "WF-20260401-0007",
+    "formTitle": "采购申请审批（演示）",
+    "initiator": "张三",
+    "dept": "研发中心",
+    "startTime": "2026-04-01 09:28:16",
+    "status": { "text": "财务复核中", "color": "processing" }
+  },
+  "businessData": [
+    { "field": "采购类型", "value": "办公设备" },
+    { "field": "预算金额", "value": "12,500.00 CNY" },
+    { "field": "用途说明", "value": "开发组新增工位设备采购" },
+    { "field": "优先级", "value": "高" }
+  ],
+  "nodes": [
+    { "key": "start", "title": "发起申请", "owner": "张三", "status": "done" },
+    { "key": "leader", "title": "部门负责人审批", "owner": "李经理", "status": "done" },
+    { "key": "finance", "title": "财务复核", "owner": "王会计", "status": "process" },
+    { "key": "gm", "title": "总经理审批", "owner": "赵总", "status": "wait" },
+    { "key": "end", "title": "流程结束", "owner": "系统", "status": "wait" }
+  ],
+  "records": [
+    {
+      "time": "2026-04-01 09:28:16",
+      "action": "张三 发起流程",
+      "result": "已提交",
+      "dotColor": "green",
+      "tagColor": "success"
+    },
+    {
+      "time": "2026-04-01 09:35:02",
+      "action": "李经理 审批",
+      "result": "同意",
+      "dotColor": "green",
+      "tagColor": "success"
+    },
+    {
+      "time": "2026-04-01 10:12:40",
+      "action": "王会计 接收任务",
+      "result": "处理中",
+      "dotColor": "blue",
+      "tagColor": "processing"
+    }
+  ],
+  "actionBar": {
+    "title": "模拟审批操作（静态）",
+    "hint": "提示：当前为流程管理预览窗口，按钮仅作展示，未接入真实流程实例与权限。"
+  }
+}

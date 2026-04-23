@@ -211,7 +211,7 @@ export interface WfInitiatorPermission {
 }
 
 /** 节点绑定的表单字段展示策略（缺省按 visible） */
-export type WfNodeFormFieldRule = 'visible' | 'hidden' | 'readonly';
+export type WfNodeFormFieldRule = 'visible' | 'hidden' | 'readonly' | 'required';
 
 /** 节点表单来源：设计器库表或本地 `views/workflowExtForm/<key>/index.vue` */
 export type WfNodeFormSource = 'designer' | 'ext';

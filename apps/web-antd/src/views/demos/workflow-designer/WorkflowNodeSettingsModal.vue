@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type {
+  WfApprovalHeaderConditionFieldType,
   WfApprovalHeaderConditionRule,
   WfApprovalOperatorRow,
   WfApprovalRoutingMode,
@@ -41,6 +42,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
 } from 'ant-design-vue';
 
 import SelectDepartmentModal from '#/components/org-picker/SelectDepartmentModal.vue';
@@ -105,11 +107,28 @@ const conditionOpOptions = [
   { label: '<', value: '<' },
   { label: '<=', value: '<=' },
 ] as const;
+const conditionBetweenOpOptions = [
+  { label: '区间 (between)', value: 'between' },
+  { label: '不在区间 (not_between)', value: 'not_between' },
+] as const;
 const conditionTypeOptions = [
   { label: '表单字段比较', value: 'form_compare' },
   { label: '人员安全级别', value: 'actor_security' },
   { label: '审批人等于某人', value: 'actor_user' },
 ] as const;
+const conditionFieldTypeOptions: Array<{
+  label: string;
+  value: WfApprovalHeaderConditionFieldType;
+}> = [
+  { label: '文本', value: 'string' },
+  { label: '数字', value: 'number' },
+  { label: '日期', value: 'date' },
+  { label: '布尔', value: 'boolean' },
+];
+const conditionBooleanValueOptions = [
+  { label: '是 (true)', value: 'true' },
+  { label: '否 (false)', value: 'false' },
+];
 const conditionActorSourceOptions = [
   { label: '创建人', value: 'initiator' },
   { label: '前序节点操作者', value: 'node' },
@@ -133,6 +152,7 @@ function defaultWeaverUi(): WfApprovalWeaverUiState {
     nodeOperatorNodeId: '',
     nodeOperatorNodeLabel: '',
     nodeOperatorPickMode: 'self',
+    autoSkipWhenSameActor: true,
   };
 }
 
@@ -273,6 +293,7 @@ function newConditionRule(
     id: `cond_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     joinWithPrev: 'and',
     type: 'form_compare',
+    formFieldType: 'string',
     actorSource: 'initiator',
     op: '==',
     ...partial,
@@ -282,7 +303,11 @@ function newConditionRule(
 function conditionRuleSummary(r: WfApprovalHeaderConditionRule): string {
   if (r.type === 'form_compare') {
     const k = String(r.formFieldKey || '').trim() || '表单字段';
-    return `${k} ${r.op || '=='} ${String(r.value ?? '')}`;
+    const t = r.formFieldType || 'string';
+    if (r.op === 'between' || r.op === 'not_between') {
+      return `${k}[${t}] ${r.op} ${String(r.value ?? '')} ~ ${String(r.valueTo ?? '')}`;
+    }
+    return `${k}[${t}] ${r.op || '=='} ${String(r.value ?? '')}`;
   }
   const actor =
     r.actorSource === 'node'
@@ -328,12 +353,13 @@ function clearConditionRules() {
 
 function onConditionTypeChange(rule: WfApprovalHeaderConditionRule) {
   if (rule.type === 'form_compare') {
+    rule.formFieldType = rule.formFieldType || 'string';
     rule.actorSource = 'initiator';
     rule.actorNodeId = undefined;
     rule.actorNodeLabel = undefined;
     rule.userId = undefined;
     rule.userName = undefined;
-    rule.op = '==';
+    onConditionFieldTypeChange(rule);
     return;
   }
   if (rule.type === 'actor_security') {
@@ -345,6 +371,112 @@ function onConditionTypeChange(rule: WfApprovalHeaderConditionRule) {
   rule.op = '==';
 }
 
+function getConditionOpOptions(rule: WfApprovalHeaderConditionRule) {
+  if (rule.type !== 'form_compare') return conditionOpOptions;
+  const t = rule.formFieldType || 'string';
+  if (t === 'boolean') {
+    return conditionOpOptions.filter((o) => o.value === '==' || o.value === '!=');
+  }
+  if (t === 'string') {
+    return conditionOpOptions.filter((o) => o.value === '==' || o.value === '!=');
+  }
+  return [...conditionOpOptions, ...conditionBetweenOpOptions];
+}
+
+function onConditionFieldTypeChange(rule: WfApprovalHeaderConditionRule) {
+  const t = rule.formFieldType || 'string';
+  const options = getConditionOpOptions(rule);
+  if (!options.some((o) => o.value === rule.op)) {
+    rule.op = options[0]?.value || '==';
+  }
+  if (rule.op !== 'between' && rule.op !== 'not_between') {
+    rule.valueTo = undefined;
+  }
+  if (t === 'boolean') {
+    if (rule.value !== 'true' && rule.value !== 'false') {
+      rule.value = 'true';
+    }
+    return;
+  }
+  if (t === 'number') {
+    if (rule.value === '' || rule.value === undefined || rule.value === null) return;
+    const n = Number(rule.value);
+    if (Number.isFinite(n)) rule.value = n;
+    return;
+  }
+  if (typeof rule.value === 'boolean') {
+    rule.value = rule.value ? 'true' : 'false';
+  }
+}
+
+function normalizeConditionRuleValue(rule: WfApprovalHeaderConditionRule): boolean {
+  if (rule.type === 'form_compare') {
+    const t = rule.formFieldType || 'string';
+    const isRangeOp = rule.op === 'between' || rule.op === 'not_between';
+    if (t === 'number') {
+      const n = Number(rule.value);
+      if (!Number.isFinite(n)) {
+        message.warning(`字段「${rule.formFieldKey || '未命名'}」请输入有效数字`);
+        return false;
+      }
+      rule.value = n;
+      if (isRangeOp) {
+        const m = Number(rule.valueTo);
+        if (!Number.isFinite(m)) {
+          message.warning(`字段「${rule.formFieldKey || '未命名'}」请输入有效区间上限`);
+          return false;
+        }
+        rule.valueTo = m;
+      } else {
+        rule.valueTo = undefined;
+      }
+      return true;
+    }
+    if (t === 'boolean') {
+      rule.valueTo = undefined;
+      if (rule.value === true || rule.value === false) return true;
+      if (rule.value === 'true' || rule.value === 'false') {
+        rule.value = rule.value === 'true';
+        return true;
+      }
+      message.warning(`字段「${rule.formFieldKey || '未命名'}」布尔值只能是 true/false`);
+      return false;
+    }
+    if (t === 'date') {
+      const from = String(rule.value ?? '').trim();
+      if (!from) {
+        message.warning(`字段「${rule.formFieldKey || '未命名'}」请输入日期值`);
+        return false;
+      }
+      rule.value = from;
+      if (isRangeOp) {
+        const to = String(rule.valueTo ?? '').trim();
+        if (!to) {
+          message.warning(`字段「${rule.formFieldKey || '未命名'}」请输入区间结束日期`);
+          return false;
+        }
+        rule.valueTo = to;
+      } else {
+        rule.valueTo = undefined;
+      }
+      return true;
+    }
+    rule.value = String(rule.value ?? '').trim();
+    rule.valueTo = undefined;
+    return true;
+  }
+  if (rule.type === 'actor_security') {
+    const n = Number(rule.value);
+    if (!Number.isFinite(n)) {
+      message.warning('人员安全级别请输入有效数字');
+      return false;
+    }
+    rule.value = n;
+    return true;
+  }
+  return true;
+}
+
 function onConditionActorSourceChange(rule: WfApprovalHeaderConditionRule) {
   if (rule.actorSource !== 'node') {
     rule.actorNodeId = undefined;
@@ -354,6 +486,7 @@ function onConditionActorSourceChange(rule: WfApprovalHeaderConditionRule) {
 
 function onConditionOk() {
   for (const r of conditionRules.value) {
+    if (!normalizeConditionRuleValue(r)) return;
     if (r.actorSource === 'node') {
       const hit = priorNodeOptions.value.find((o) => o.value === r.actorNodeId);
       r.actorNodeLabel = hit ? String(hit.label) : '';
@@ -815,6 +948,12 @@ function readApproveFromProps(p: Record<string, unknown> & WfNodeProperties) {
   }
   if (!Array.isArray(weaverUi.weaverDeptPicks)) weaverUi.weaverDeptPicks = [];
   if (!Array.isArray(weaverUi.weaverRolePicks)) weaverUi.weaverRolePicks = [];
+  weaverUi.autoSkipWhenSameActor =
+    typeof wu?.autoSkipWhenSameActor === 'boolean'
+      ? wu.autoSkipWhenSameActor
+      : typeof wu?.nodeOperatorAutoSkip === 'boolean'
+        ? wu.nodeOperatorAutoSkip
+        : true;
   loadOperatorRowsFromProps(p);
 }
 
@@ -1453,6 +1592,25 @@ function handleCancel() {
                     </RadioGroup>
                   </td>
                 </tr>
+                <tr>
+                  <td class="og-td-label og-td-label-with-hint">
+                    自动跳过
+                    <Tooltip
+                      title="当解析出的办理人与前序节点为同一人时，是否跳过本节点待办。若本节点有表单必填项等，请选「否」。"
+                    >
+                      <IconifyIcon
+                        icon="mdi:help-circle-outline"
+                        class="og-hint-icon"
+                      />
+                    </Tooltip>
+                  </td>
+                  <td class="og-td-value" colspan="3">
+                    <RadioGroup v-model:value="weaverUi.autoSkipWhenSameActor">
+                      <Radio :value="true">是</Radio>
+                      <Radio :value="false">否</Radio>
+                    </RadioGroup>
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -1826,16 +1984,67 @@ function handleCancel() {
                 placeholder="字段名"
               />
               <Select
+                v-model:value="rule.formFieldType"
+                :options="conditionFieldTypeOptions"
+                class="og-cond-col-op"
+                size="small"
+                @change="onConditionFieldTypeChange(rule)"
+              />
+              <Select
                 v-model:value="rule.op"
-                :options="conditionOpOptions"
+                :options="getConditionOpOptions(rule)"
                 class="og-cond-col-op"
                 size="small"
               />
-              <Input
+              <InputNumber
+                v-if="rule.formFieldType === 'number'"
                 v-model:value="rule.value"
                 class="og-cond-col-val"
                 size="small"
-                placeholder="输入值"
+                placeholder="数字值"
+              />
+              <InputNumber
+                v-if="
+                  rule.formFieldType === 'number' &&
+                  (rule.op === 'between' || rule.op === 'not_between')
+                "
+                v-model:value="rule.valueTo"
+                class="og-cond-col-val"
+                size="small"
+                placeholder="数字上限"
+              />
+              <Select
+                v-else-if="rule.formFieldType === 'boolean'"
+                v-model:value="rule.value"
+                :options="conditionBooleanValueOptions"
+                class="og-cond-col-val"
+                size="small"
+              />
+              <Input
+                v-else-if="rule.formFieldType !== 'date'"
+                v-model:value="rule.value"
+                class="og-cond-col-val"
+                size="small"
+                :placeholder="
+                  rule.formFieldType === 'date' ? '日期值，如 2026-04-13' : '输入值'
+                "
+              />
+              <Input
+                v-else
+                v-model:value="rule.value"
+                class="og-cond-col-val"
+                size="small"
+                placeholder="开始日期，如 2026-04-13"
+              />
+              <Input
+                v-if="
+                  rule.formFieldType === 'date' &&
+                  (rule.op === 'between' || rule.op === 'not_between')
+                "
+                v-model:value="rule.valueTo"
+                class="og-cond-col-val"
+                size="small"
+                placeholder="结束日期，如 2026-04-30"
               />
             </template>
             <template v-else>
@@ -2085,6 +2294,10 @@ function handleCancel() {
   border: 1px solid #d9d9d9;
 }
 
+.og-td-label-with-hint {
+  white-space: nowrap;
+}
+
 .og-td-value {
   padding: 4px 8px;
   vertical-align: middle;
@@ -2146,6 +2359,14 @@ function handleCancel() {
 .og-obj-label {
   min-width: 52px;
   color: #333;
+}
+
+.og-hint-icon {
+  margin-left: 4px;
+  color: #8c8c8c;
+  font-size: 14px;
+  vertical-align: -2px;
+  cursor: help;
 }
 
 .og-obj-search {

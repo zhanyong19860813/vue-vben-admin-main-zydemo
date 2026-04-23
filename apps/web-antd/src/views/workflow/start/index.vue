@@ -18,6 +18,14 @@ const formDataJson = ref(
       dept: '研发部',
       applicant: '张三',
       reason: '设备采购',
+      /** 供流程出口条件 scope=initiator 使用（与流程设计器约定一致） */
+      $initiator: {
+        userId: '',
+        departmentId: 'dept-demo-001',
+        securityLevel: 2,
+        roleCodes: ['R_STAFF'],
+        positionIds: [],
+      },
     },
     null,
     2,
@@ -79,7 +87,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <Page title="发起流程" description="填写流程编码与表单 JSON，调用后端 instance/start 发起流程实例">
+  <Page
+    title="发起流程"
+    description="表单 JSON 可包含 $initiator（部门/角色/岗位/安全系数等），供设计器里「发起人上下文」类出口条件求值。"
+  >
     <div class="p-4">
       <Card size="small" title="发起参数">
         <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">

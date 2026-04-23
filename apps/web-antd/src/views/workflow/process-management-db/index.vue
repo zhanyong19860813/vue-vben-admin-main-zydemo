@@ -40,6 +40,7 @@ import {
 } from '#/views/workflow/process-preview/types';
 
 import {
+  wfEngineAiGenerateConfig,
   type WfEngineCategoryRow,
   type WfEngineProcessRow,
   wfEngineCreateCategory,
@@ -856,6 +857,7 @@ const uiText = {
   preview: '\u9884\u89c8',
   mobilePreview: '\u79fb\u52a8\u7aef\u9884\u89c8',
   runtime: '\u8fd0\u884c\u53f0',
+  aiTemplate: 'AI配置模板',
   basicTab: '\u57fa\u7840\u4fe1\u606f',
   flowTab: '\u6d41\u8f6c\u4fe1\u606f',
   code: '\u7f16\u7801',
@@ -881,6 +883,92 @@ const uiText = {
   publishSuccess: '\u5df2\u53d1\u5e03\u7248\u672c ',
   errPublishPrefix: '\u53d1\u5e03\u5931\u8d25\uff1a',
 } as const;
+
+const aiTemplateModalOpen = ref(false);
+const aiWorkflowUserPrompt = ref('');
+const aiWorkflowJsonResult = ref('');
+const aiWorkflowValidateErrors = ref<string[]>([]);
+const aiGenerating = ref(false);
+const aiProvider = ref<'deepseek' | 'qwen'>('qwen');
+const aiProviderOptions = [
+  { label: '通义千问（Qwen）', value: 'qwen' },
+  { label: 'DeepSeek', value: 'deepseek' },
+] as const;
+const aiWorkflowPromptTemplate = `你是流程配置助手。请把我的业务需求转换成“可在流程管理（数据库）页面逐项配置”的清单。
+
+业务名称：<请假/签卡/加班/...>
+流程编码：<如 HR_OT>
+流程名称：<如 加班流程>
+发起人范围：<哪些人可以发起>
+审批链（从发起到结束）：<例如 发起人 -> 部门主管 -> 经理 -> 结束>
+条件分支规则：<例如 时长<=4小时主管后结束，>4小时走经理>
+驳回规则：<例如 所有审批节点都可退回发起人>
+表单字段（必填）：<字段1, 字段2, ...>
+
+请按以下格式输出：
+1) 节点清单（名称、类型、办理人策略）
+2) 连线清单（起点、终点、条件、是否回退）
+3) 节点表单绑定清单
+4) 发布前检查清单（5条以内）`;
+
+async function copyAiWorkflowPromptTemplate() {
+  try {
+    await navigator.clipboard.writeText(aiWorkflowPromptTemplate);
+    message.success('AI提问模板已复制');
+    aiTemplateModalOpen.value = false;
+  } catch {
+    message.error('复制失败，请手动复制模板内容');
+  }
+}
+
+async function generateAiWorkflowJson() {
+  const prompt = aiWorkflowUserPrompt.value.trim();
+  if (!prompt) {
+    message.warning('请先输入业务需求');
+    return;
+  }
+  aiGenerating.value = true;
+  try {
+    aiWorkflowValidateErrors.value = [];
+    const resp = await wfEngineAiGenerateConfig({
+      prompt,
+      provider: aiProvider.value,
+    });
+    aiWorkflowJsonResult.value = String(resp?.json || '').trim();
+    if (!aiWorkflowJsonResult.value) {
+      message.warning('AI 未返回可用 JSON，请调整描述后重试');
+      return;
+    }
+    aiWorkflowValidateErrors.value = Array.isArray(resp?.errors) ? resp.errors : [];
+    if (resp?.valid) {
+      message.success(
+        `AI 已生成可用 JSON（${resp?.provider || aiProvider.value} / ${resp?.model || 'default'}${resp?.autoRepaired ? '，已自动修复' : ''}）`,
+      );
+    } else {
+      message.warning(
+        `AI 已返回 JSON，但校验未通过（${aiWorkflowValidateErrors.value.length} 项）`,
+      );
+    }
+  } catch (e) {
+    message.error(`AI 生成失败：${(e as Error).message}`);
+  } finally {
+    aiGenerating.value = false;
+  }
+}
+
+async function copyAiWorkflowJsonResult() {
+  const txt = aiWorkflowJsonResult.value.trim();
+  if (!txt) {
+    message.warning('暂无可复制的 JSON');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(txt);
+    message.success('流程 JSON 已复制');
+  } catch {
+    message.error('复制失败，请手动复制');
+  }
+}
 
 interface NodeInfoTableRow {
   key: string;
@@ -1629,6 +1717,13 @@ function onTreeSelect(keys: (number | string)[]) {
             >
               {{ uiText.runtime }}
             </Button>
+            <Button
+              size="small"
+              type="default"
+              @click="aiTemplateModalOpen = true"
+            >
+              {{ uiText.aiTemplate }}
+            </Button>
           </Space>
         </template>
         <div v-if="showDebugPanel" class="wf-mgmt-debug-panel">
@@ -1897,6 +1992,63 @@ function onTreeSelect(keys: (number | string)[]) {
           </Checkbox>
         </Form.Item>
       </Form>
+    </Modal>
+    <Modal
+      v-model:open="aiTemplateModalOpen"
+      title="AI流程配置提问模板"
+      width="760px"
+      ok-text="复制模板"
+      cancel-text="关闭"
+      @ok="copyAiWorkflowPromptTemplate"
+    >
+      <p class="mb-2 text-sm text-muted-foreground">
+        业务用户可以复制下面模板，填好后发送给 AI，AI 返回后按清单在本页配置即可。
+      </p>
+      <TextArea
+        :value="aiWorkflowPromptTemplate"
+        :auto-size="{ minRows: 10, maxRows: 18 }"
+        readonly
+      />
+      <p class="mb-2 mt-3 text-sm text-muted-foreground">
+        直接调用 AI 生成 JSON（先写业务描述，再点“AI生成JSON”）：
+      </p>
+      <TextArea
+        v-model:value="aiWorkflowUserPrompt"
+        :auto-size="{ minRows: 4, maxRows: 8 }"
+        placeholder="例如：加班流程，发起人->部门主管；时长>4小时加经理审批；驳回回发起人。"
+      />
+      <div class="mt-2 flex items-center gap-2">
+        <span class="text-sm text-muted-foreground">智能体</span>
+        <Select
+          v-model:value="aiProvider"
+          style="width: 220px"
+          :options="aiProviderOptions"
+        />
+      </div>
+      <div class="mt-2 flex gap-2">
+        <Button size="small" type="primary" :loading="aiGenerating" @click="generateAiWorkflowJson">
+          AI生成JSON
+        </Button>
+        <Button size="small" type="default" @click="copyAiWorkflowJsonResult">
+          复制JSON
+        </Button>
+      </div>
+      <TextArea
+        class="mt-2"
+        :value="aiWorkflowJsonResult"
+        :auto-size="{ minRows: 6, maxRows: 14 }"
+        placeholder="AI 返回的流程 JSON 会显示在这里"
+        readonly
+      />
+      <div
+        v-if="aiWorkflowValidateErrors.length > 0"
+        class="mt-2 rounded border border-warning bg-warning/5 px-3 py-2 text-xs"
+      >
+        <div class="mb-1 font-medium text-warning">JSON 校验未通过：</div>
+        <div v-for="(err, idx) in aiWorkflowValidateErrors" :key="`ai-json-err-${idx}`">
+          {{ idx + 1 }}. {{ err }}
+        </div>
+      </div>
     </Modal>
   </Page>
 </template>

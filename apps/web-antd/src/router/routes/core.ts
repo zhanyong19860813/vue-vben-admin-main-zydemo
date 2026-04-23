@@ -92,6 +92,98 @@ const coreRoutes: RouteRecordRaw[] = [
       },
     ],
   },
+  /**
+   * 流程管理「预览」新页签：不走菜单权限合并，保证 router.resolve 可解析。
+   */
+  {
+    component: BasicLayout,
+    meta: {
+      hideInBreadcrumb: true,
+      hideInMenu: true,
+      title: '流程预览',
+    },
+    name: 'WorkflowProcessPreviewLayout',
+    path: '/workflow/process-preview',
+    children: [
+      {
+        name: 'WorkflowProcessPreview',
+        path: '',
+        component: () => import('#/views/workflow/process-preview/index.vue'),
+        meta: {
+          title: '流程预览',
+          hideInMenu: true,
+        },
+      },
+    ],
+  },
+  /**
+   * 流程运行台（MVP）：由流程管理页按钮新开窗口进入，不依赖菜单权限合并。
+   */
+  {
+    component: BasicLayout,
+    meta: {
+      hideInBreadcrumb: true,
+      hideInMenu: true,
+      title: '流程运行台',
+    },
+    name: 'WorkflowRuntimeLayout',
+    path: '/workflow/runtime',
+    children: [
+      {
+        name: 'WorkflowRuntimeMvpCore',
+        path: '',
+        component: () => import('#/views/workflow/runtime/index.vue'),
+        meta: {
+          title: '流程运行台（MVP）',
+          hideInMenu: true,
+        },
+      },
+    ],
+  },
+  /**
+   * 流程查看（只读）：独立页面（无 BasicLayout 壳），用于新窗口打开查看。
+   */
+  {
+    component: () => import('#/views/workflow/runtime-viewer/index.vue'),
+    meta: {
+      hideInBreadcrumb: true,
+      hideInMenu: true,
+      hideInTab: true,
+      title: '流程查看（只读）',
+    },
+    name: 'WorkflowRuntimeViewerCore',
+    path: '/workflow/runtime-viewer',
+  },
+  /**
+   * 流程运行台（发起/办理）：独立全屏，无 BasicLayout，与「流程查看」新开窗口体验一致。
+   * query 与 /workflow/runtime 相同（processDefId、instanceId、runtimeDraftKey 等）。
+   */
+  {
+    component: () => import('#/views/workflow/runtime/index.vue'),
+    meta: {
+      hideInBreadcrumb: true,
+      hideInMenu: true,
+      hideInTab: true,
+      title: '流程运行台',
+    },
+    name: 'WorkflowRuntimeEmbedCore',
+    path: '/workflow/runtime-embed',
+  },
+  /**
+   * 钉钉第三方应用首页（移动端）：独立轻量页面，仅展示当前登录人基础信息。
+   */
+  {
+    component: () => import('#/views/dingtalk/home/index.vue'),
+    meta: {
+      hideInBreadcrumb: true,
+      hideInMenu: true,
+      hideInTab: true,
+      ignoreAccess: true,
+      title: '钉钉首页',
+    },
+    name: 'DingTalkMobileHome',
+    path: '/dingtalk/home',
+  },
 ];
 
 export { coreRoutes, fallbackNotFoundRoute };

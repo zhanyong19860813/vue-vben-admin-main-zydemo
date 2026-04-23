@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component as VueConcreteComponent } from 'vue';
-import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, h, nextTick, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
@@ -8,18 +8,37 @@ import { useAccessStore, useUserStore } from '@vben/stores';
 import type { VbenFormSchema } from '#/adapter/form';
 import { useVbenForm } from '#/adapter/form';
 import { getWorkflowFormSchemaList } from '#/api/workflow';
-import { buildWorkflowBuiltinValuesFromUser } from '#/views/demos/form-designer/workflowFormRuntime';
+import {
+  applyProcessTitleBySchemaLabel,
+  buildWorkflowBuiltinValuesFromUser,
+  looksLikeEmployeeOrLoginId,
+  restoreBuiltinValuesAfterJsonMerge,
+  supplementBuiltinValuesByFieldLabel,
+} from '#/views/demos/form-designer/workflowFormRuntime';
 import FormTabsTablePreview from '#/views/demos/form-designer/FormTabsTablePreview.vue';
 import type { TabTableConfig } from '#/views/demos/form-designer/FormTabsTablePreview.vue';
+import type { WfNodeFormFieldRule } from '#/views/demos/workflow-designer/workflow-definition.schema';
 import {
   applyFieldRulesToSchemaPlain,
+  coerceLatestMainForm,
+  coerceLatestTabsData,
+  getStartNodeBinding,
   inferBizTypeFromGraphNode,
+  isLikelyStartNode,
   jsonSafeClone,
+  normalizeFieldRule,
   normalizeSchemaForPreview,
   parseStoredFormSchemaJson,
+  resolveNodeFormBindingWithStartFallback,
 } from '#/views/workflow/wfFormPreviewUtils';
 import { createExtWorkflowFormComponent } from '#/views/workflowExtForm/registry';
 import ProcessPreviewShell from '#/views/workflow/process-preview/ProcessPreviewShell.vue';
+import {
+  collectEmployeeIdsForDisplay,
+  fetchEmployeeDisplayLabelsByIds,
+  formatOperatorLabel,
+  resolveActorFromLatestAndPending,
+} from '#/views/workflow/workflowOperatorDisplay';
 import RuntimeGraphReadonly from './RuntimeGraphReadonly.vue';
 
 import {
@@ -45,10 +64,13 @@ import {
   wfEngineRuntimeTodo,
   setWorkflowRuntimeMockAssigneeUserId,
 } from '#/api/workflowEngine';
+import { useAuthStore } from '#/store';
 
 const route = useRoute();
 const userStore = useUserStore();
 const accessStore = useAccessStore();
+const authStore = useAuthStore();
+const isMobilePreviewMode = computed(() => String(route.query.mode || '') === 'mobile');
 
 function decodeJwtPayload(token: null | string): Record<string, unknown> | null {
   if (!token || typeof token !== 'string') return null;
@@ -64,10 +86,24 @@ function decodeJwtPayload(token: null | string): Record<string, unknown> | null 
   }
 }
 
-const showDebugPanel = ref(false);
+const DEBUG_PANEL_OPEN_KEY = 'wf-runtime-debug-panel-open';
+function readSavedDebugPanelOpen() {
+  try {
+    const v = typeof localStorage === 'undefined' ? '' : localStorage.getItem(DEBUG_PANEL_OPEN_KEY);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch {
+    // ignore
+  }
+  // 默认展开：便于联调定位
+  return true;
+}
+const showDebugPanel = ref(readSavedDebugPanelOpen());
 
 const processCode = ref('');
 const processDefId = ref('');
+const runtimeDraftKey = ref('');
+const runtimeDraftDefinitionJson = ref('');
 const businessKey = ref('');
 const title = ref('');
 const starterDeptId = ref('');
@@ -75,6 +111,129 @@ const mockStarterUserId = ref('');
 const mockStarterName = ref('');
 const mockStarterDeptName = ref('');
 const mockStarterPositionName = ref('');
+
+function isLikelyGuidStr(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  const unbrace = t.startsWith('{') && t.endsWith('}') ? t.slice(1, -1) : t;
+  return /^[\da-f]{8}-[\da-f]{4}-[1-5][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(unbrace);
+}
+
+/** 合并 userStore + JWT，供流程内置字段带出姓名/工号/部门/岗位 */
+function mergeUserInfoForWorkflow(): Record<string, any> {
+  const u: Record<string, any> = { ...(userStore.userInfo as any) };
+  /** 后端常把登录号放在 name，避免占住「姓名」且补全工号 */
+  const rawName = String(u.name || '').trim();
+  if (rawName && looksLikeEmployeeOrLoginId(rawName) && !String(u.realName || '').trim()) {
+    if (!String(u.employeeCode || '').trim()) u.employeeCode = rawName;
+    if (!String(u.employeeNo || '').trim()) u.employeeNo = rawName;
+    delete u.name;
+  }
+  const jwt = decodeJwtPayload(accessStore.accessToken);
+  if (jwt) {
+    const j = jwt as Record<string, unknown>;
+    const str = (k: string) => {
+      const v = j[k];
+      return v !== undefined && v !== null ? String(v).trim() : '';
+    };
+    /** JWT「姓名」：name 常与登录号相同，只采用不像工号的 name/given_name */
+    const jwtHumanName = str('name') || str('given_name');
+    if (jwtHumanName && !looksLikeEmployeeOrLoginId(jwtHumanName)) {
+      if (!String(u.realName || '').trim()) u.realName = jwtHumanName;
+      if (!String(u.name || '').trim()) u.name = jwtHumanName;
+    }
+    /** 登录账号 → 工号（OIDC unique_name / preferred_username） */
+    const loginAccount = str('unique_name') || str('preferred_username');
+    if (loginAccount && !isLikelyGuidStr(loginAccount)) {
+      if (!String(u.employeeCode || '').trim()) u.employeeCode = loginAccount;
+      if (!String(u.employeeNo || '').trim()) u.employeeNo = loginAccount;
+      if (!String(u.username || '').trim()) u.username = loginAccount;
+    }
+    if (!String(u.username || '').trim()) {
+      const un = str('preferred_username');
+      if (un) u.username = un;
+    }
+    const uid = str('UserId') || str('userId') || str('sub');
+    if (uid && !String(u.userId || '').trim()) u.userId = uid;
+    const emp = str('employee_id') || str('EmployeeId') || str('emp_code');
+    if (emp && !isLikelyGuidStr(emp)) {
+      if (!String(u.employeeCode || '').trim()) u.employeeCode = emp;
+      if (!String(u.employeeNo || '').trim()) u.employeeNo = emp;
+    }
+    if (!String(u.deptName || '').trim()) {
+      const dn =
+        str('deptName') ||
+        str('departmentName') ||
+        str('department_name') ||
+        str('DeptName') ||
+        str('department') ||
+        str('dept') ||
+        str('org_name') ||
+        str('orgName') ||
+        str('organizationName');
+      if (dn) {
+        u.deptName = dn;
+        u.departmentName = dn;
+      }
+    }
+    if (!String(u.positionName || '').trim()) {
+      const pn =
+        str('positionName') ||
+        str('dutyName') ||
+        str('postName') ||
+        str('title') ||
+        str('post') ||
+        str('jobTitle') ||
+        str('JobTitle');
+      if (pn) {
+        u.positionName = pn;
+        u.dutyName = pn;
+        u.postName = pn;
+      }
+    }
+  }
+  if (mockStarterName.value) {
+    u.realName = mockStarterName.value;
+    u.name = mockStarterName.value;
+  }
+  if (mockStarterUserId.value) {
+    u.employeeCode = mockStarterUserId.value;
+    u.employeeNo = mockStarterUserId.value;
+    u.userCode = mockStarterUserId.value;
+    u.username = mockStarterUserId.value;
+  }
+  if (mockStarterDeptName.value) {
+    u.deptName = mockStarterDeptName.value;
+    u.departmentName = mockStarterDeptName.value;
+  }
+  if (mockStarterPositionName.value) {
+    u.positionName = mockStarterPositionName.value;
+    u.dutyName = mockStarterPositionName.value;
+    u.postName = mockStarterPositionName.value;
+  }
+  return u;
+}
+
+/**
+ * `/workflow/runtime-embed` 等为 core 子路由，路由守卫对 core 直接放行，不会走 fetchUserInfo；
+ * 新开全屏页往往仅有 localStorage 中的 token，userInfo 仍为空，内置姓名/工号/部门/岗位无法带出。
+ */
+async function ensureUserInfoForWorkflowRuntime() {
+  if (!accessStore.accessToken) return;
+  const u = userStore.userInfo as Record<string, any> | null | undefined;
+  const hasUsable =
+    u &&
+    (String(u.realName || u.name || '').trim() ||
+      String(u.username || '').trim() ||
+      String(u.employeeCode || u.employeeNo || '').trim());
+  if (hasUsable) return;
+  try {
+    await authStore.fetchUserInfo();
+  } catch {
+    // 忽略：mergeUserInfoForWorkflow 仍可能从 JWT 补一部分
+  }
+}
+
 /** 测试：模拟「办理人」工号，请求头 X-Workflow-Mock-User-Id（与模拟发起人不同：后者只影响发起） */
 function readSavedMockAssigneeId() {
   try {
@@ -99,9 +258,15 @@ const mainFormJson = ref(
     2,
   ),
 );
+/** 发起时已提交的主表/明细缓存：用于提交后重渲染时保持页面不变 */
+const submittedStartMainForm = ref<null | Record<string, any>>(null);
+const submittedStartTabsData = ref<null | Record<string, any[]>>(null);
 
 const startLoading = ref(false);
+const saveDraftLoading = ref(false);
 const lastStartResp = ref<Record<string, unknown> | null>(null);
+const startSubmittedInstanceNo = ref('');
+const startSubmittedHeaderFlowNo = ref('');
 
 const todoLoading = ref(false);
 const todoActionLoading = ref('');
@@ -121,7 +286,50 @@ const timelineLoading = ref(false);
 const inspectInstanceId = ref('');
 const instanceDetail = ref<Record<string, any> | null>(null);
 const timelineRows = ref<Array<Record<string, any>>>([]);
+const operatorDisplayMap = ref<Record<string, string>>({});
+
+async function refreshOperatorDisplayCache() {
+  const ids = collectEmployeeIdsForDisplay(
+    timelineRows.value || [],
+    (instanceDetail.value?.tasks as Array<Record<string, any>>) || [],
+  );
+  if (!ids.length) {
+    operatorDisplayMap.value = {};
+    return;
+  }
+  const m = await fetchEmployeeDisplayLabelsByIds(ids);
+  operatorDisplayMap.value = m;
+}
 const debugEvents = ref<Array<Record<string, any>>>([]);
+const runtimePerfLogs = ref<
+  Array<{ at: string; error?: string; ms: number; name: string; ok: boolean }>
+>([]);
+const SHOW_RUNTIME_PERF_LOG = false;
+
+function pushRuntimePerfLog(name: string, ms: number, ok: boolean, error?: string) {
+  runtimePerfLogs.value.unshift({
+    name,
+    ms: Number.isFinite(ms) ? Math.round(ms) : -1,
+    ok,
+    error: error ? String(error) : undefined,
+    at: new Date().toLocaleTimeString(),
+  });
+  if (runtimePerfLogs.value.length > 40) {
+    runtimePerfLogs.value = runtimePerfLogs.value.slice(0, 40);
+  }
+}
+
+async function profiled<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const t0 = performance.now();
+  try {
+    const v = await fn();
+    pushRuntimePerfLog(name, performance.now() - t0, true);
+    return v;
+  } catch (err) {
+    pushRuntimePerfLog(name, performance.now() - t0, false, (err as Error)?.message || String(err));
+    throw err;
+  }
+}
 const startBindingLoading = ref(false);
 const startBindingHint = ref('当前流程暂未读取到发起节点绑定表单，使用 JSON 方式发起。');
 const startBoundFormCode = ref('');
@@ -133,13 +341,51 @@ const startFormSchema = ref<VbenFormSchema[]>([]);
 const startLayoutIsTabs = ref(false);
 const startTabsConfig = ref<TabTableConfig[]>([]);
 const startTabsInitialMainValues = ref<Record<string, any>>({});
-const startTabsFieldRulesMap = ref<Record<string, 'hidden' | 'readonly' | 'visible'>>({});
+const startTabsFieldRulesMap = ref<Record<string, WfNodeFormFieldRule>>({});
 const startTabsTablePreviewRef = ref<InstanceType<typeof FormTabsTablePreview> | null>(null);
 /** 当前流程定义 JSON，用于渲染与「流程预览」一致的步骤条 */
 const runtimeDefinitionJson = ref('');
 /** 从接口加载的流程名称/编码（主界面展示，不暴露技术参数） */
 const loadedProcessName = ref('');
 const loadedProcessCode = ref('');
+const startMetaWorkflowNo = ref('');
+const startMetaDept = ref('');
+const startMetaPosition = ref('');
+const startMetaEmployeeNo = ref('');
+const startMetaWorkflowNoPrefix = ref('WF');
+
+function buildStartFixedMetaValues(workflowNoPrefix?: string) {
+  const seedUser = mergeUserInfoForWorkflow();
+  const builtins = buildWorkflowBuiltinValuesFromUser(
+    [
+      { fieldName: '__flowNo', componentProps: { workflowBuiltin: 'flowNo' } },
+      { fieldName: '__employeeNo', componentProps: { workflowBuiltin: 'employeeNo' } },
+      { fieldName: '__dept', componentProps: { workflowBuiltin: 'dept' } },
+      { fieldName: '__position', componentProps: { workflowBuiltin: 'position' } },
+    ] as unknown as VbenFormSchema[],
+    {
+      userInfo: seedUser,
+      workflowNoPrefix: workflowNoPrefix || startMetaWorkflowNoPrefix.value,
+      processTitle: loadedProcessName.value,
+    },
+  );
+  return {
+    flowNo: String(builtins.__flowNo || '').trim(),
+    employeeNo: String(builtins.__employeeNo || '').trim(),
+    dept: String(builtins.__dept || '').trim(),
+    position: String(builtins.__position || '').trim(),
+  };
+}
+
+function refreshStartFixedMeta(options?: { keepWorkflowNo?: boolean; workflowNoPrefix?: string }) {
+  const fixed = buildStartFixedMetaValues(options?.workflowNoPrefix);
+  if (!options?.keepWorkflowNo || !startMetaWorkflowNo.value.trim()) {
+    startMetaWorkflowNo.value = fixed.flowNo;
+  }
+  startMetaDept.value = fixed.dept;
+  startMetaPosition.value = fixed.position;
+  startMetaEmployeeNo.value = fixed.employeeNo;
+}
 
 const [StartBoundForm, startBoundFormApi] = useVbenForm({
   showDefaultActions: false,
@@ -149,6 +395,16 @@ const [StartBoundForm, startBoundFormApi] = useVbenForm({
   formItemGapPx: 2 as any,
   commonConfig: { labelWidth: 110 } as any,
 });
+function buildStartFormUiState(schema: VbenFormSchema[] = [] as VbenFormSchema[]) {
+  return {
+    schema,
+    layout: isMobilePreviewMode.value ? 'vertical' : 'horizontal',
+    wrapperClass: isMobilePreviewMode.value
+      ? 'wf-mobile-form-single grid-cols-1 gap-y-2'
+      : 'grid-cols-1 md:grid-cols-2 gap-x-[2px] gap-y-[2px]',
+    commonConfig: isMobilePreviewMode.value ? ({ labelWidth: 88 } as any) : ({ labelWidth: 110 } as any),
+  } as const;
+}
 
 /** 当前待办节点绑定的办理表单（设计器 / 硬编码 / 无绑定时仅快照） */
 const taskBoundFormLoading = ref(false);
@@ -157,13 +413,14 @@ let taskFormLoadInFlight = 0;
 let taskFormLoadLatestSeq = 0;
 let taskFormLoadSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 const taskBoundFormMode = ref<'none' | 'designer' | 'ext' | 'snapshot'>('none');
+const taskBoundFormReuseError = ref('');
 const taskFormSchema = ref<VbenFormSchema[]>([]);
 const taskExtRuntimeRoot = shallowRef<VueConcreteComponent | null>(null);
 const taskBindingHint = ref('');
 const taskLayoutIsTabs = ref(false);
 const taskTabsConfig = ref<TabTableConfig[]>([]);
 const taskTabsInitialMainValues = ref<Record<string, any>>({});
-const taskTabsFieldRulesMap = ref<Record<string, 'hidden' | 'readonly' | 'visible'>>({});
+const taskTabsFieldRulesMap = ref<Record<string, WfNodeFormFieldRule>>({});
 const taskTabsTablePreviewRef = ref<InstanceType<typeof FormTabsTablePreview> | null>(null);
 const taskPendingTabsData = ref<Record<string, any[]>>({});
 const [TaskBoundForm, taskBoundFormApi] = useVbenForm({
@@ -174,14 +431,100 @@ const [TaskBoundForm, taskBoundFormApi] = useVbenForm({
   formItemGapPx: 2 as any,
   commonConfig: { labelWidth: 110 } as any,
 });
+function buildTaskFormUiState(schema: VbenFormSchema[] = [] as VbenFormSchema[]) {
+  return {
+    schema,
+    layout: isMobilePreviewMode.value ? 'vertical' : 'horizontal',
+    wrapperClass: isMobilePreviewMode.value
+      ? 'wf-mobile-form-single grid-cols-1 gap-y-2'
+      : 'grid-cols-1 md:grid-cols-2 gap-x-[2px] gap-y-[2px]',
+    commonConfig: isMobilePreviewMode.value ? ({ labelWidth: 88 } as any) : ({ labelWidth: 110 } as any),
+  } as const;
+}
+const REQUIRED_MISSING_CLASS = 'wf-required-missing';
+const startMissingRequiredKeys = ref<string[]>([]);
+const taskMissingRequiredKeys = ref<string[]>([]);
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+function applyRequiredMissingStyleToSchema(
+  schema: VbenFormSchema[],
+  requiredKeys: string[],
+  missingKeys: string[],
+): VbenFormSchema[] {
+  const required = new Set((requiredKeys || []).map((k) => String(k || '').trim()).filter(Boolean));
+  const missing = new Set((missingKeys || []).map((k) => String(k || '').trim()).filter(Boolean));
+  return (schema || []).map((item) => {
+    const fieldKey = String(item?.fieldName || '').trim();
+    const oldCls = String(item?.formItemClass || '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((x) => x !== 'wf-required-mark')
+      .filter((x) => x !== REQUIRED_MISSING_CLASS);
+    if (fieldKey && required.has(fieldKey)) oldCls.push('wf-required-mark');
+    if (fieldKey && missing.has(fieldKey)) oldCls.push(REQUIRED_MISSING_CLASS);
+    const oldLabelCls = String((item as any)?.labelClass || '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((x) => x !== 'wf-required-label')
+      .filter((x) => x !== 'wf-required-missing-label');
+    if (fieldKey && required.has(fieldKey)) oldLabelCls.push('wf-required-label');
+    if (fieldKey && missing.has(fieldKey)) oldLabelCls.push('wf-required-missing-label');
+    const hasRequired = fieldKey && required.has(fieldKey);
+    const originalSuffix = (item as any)?.suffix;
+    const requiredSuffix = hasRequired
+      ? () =>
+          h(
+            'span',
+            {
+              class: 'wf-required-inline-star',
+              title: '必填',
+            },
+            '*',
+          )
+      : originalSuffix;
+    return {
+      ...item,
+      formItemClass: oldCls.join(' '),
+      labelClass: oldLabelCls.join(' '),
+      suffix: requiredSuffix,
+    } as VbenFormSchema;
+  });
+}
+
+async function applyStartRequiredVisual(missingKeys: string[]) {
+  startMissingRequiredKeys.value = [...missingKeys];
+  if (startBoundFormMode.value !== 'designer' || !startFormSchema.value.length) return;
+  const requiredKeys = collectRequiredFieldKeysFromRules(startTabsFieldRulesMap.value).mainKeys;
+  startFormSchema.value = applyRequiredMissingStyleToSchema(
+    startFormSchema.value as VbenFormSchema[],
+    requiredKeys,
+    missingKeys,
+  );
+  if (!startLayoutIsTabs.value) {
+    await startBoundFormApi.setState(buildStartFormUiState(startFormSchema.value as VbenFormSchema[]));
+  }
+}
+
+async function applyTaskRequiredVisual(missingKeys: string[]) {
+  taskMissingRequiredKeys.value = [...missingKeys];
+  if (taskBoundFormMode.value !== 'designer' || !taskFormSchema.value.length) return;
+  const requiredKeys = collectRequiredFieldKeysFromRules(taskTabsFieldRulesMap.value).mainKeys;
+  taskFormSchema.value = applyRequiredMissingStyleToSchema(
+    taskFormSchema.value as VbenFormSchema[],
+    requiredKeys,
+    missingKeys,
+  );
+  if (!taskLayoutIsTabs.value) {
+    await taskBoundFormApi.setState(buildTaskFormUiState(taskFormSchema.value as VbenFormSchema[]));
+  }
+}
+
+function withTimeout<T>(p: Promise<T> | T, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const tid = setTimeout(
       () => reject(new Error(`${label} 超时（${Math.round(ms / 1000)}s）`)),
       ms,
     );
-    p.then(
+    Promise.resolve(p).then(
       (v) => {
         clearTimeout(tid);
         resolve(v);
@@ -202,6 +545,37 @@ function toPrettyJson(value: unknown) {
   } catch {
     return String(value);
   }
+}
+
+let workflowFormSchemaIndexCache: Map<string, Record<string, any>> | null = null;
+let workflowFormSchemaIndexLoading: Promise<Map<string, Record<string, any>>> | null = null;
+
+async function getWorkflowFormSchemaByCode(formCode: string) {
+  const code = String(formCode || '').trim();
+  if (!code) return null;
+  if (workflowFormSchemaIndexCache?.has(code)) {
+    return workflowFormSchemaIndexCache.get(code) || null;
+  }
+  if (!workflowFormSchemaIndexLoading) {
+    workflowFormSchemaIndexLoading = (async () => {
+      const listRaw = (await getWorkflowFormSchemaList()) as any;
+      const formRows = (Array.isArray(listRaw)
+        ? listRaw
+        : listRaw?.items || listRaw?.records || []) as Array<Record<string, any>>;
+      const map = new Map<string, Record<string, any>>();
+      for (const row of formRows) {
+        const c = String(row?.code || '').trim();
+        if (!c) continue;
+        map.set(c, row);
+      }
+      workflowFormSchemaIndexCache = map;
+      return map;
+    })().finally(() => {
+      workflowFormSchemaIndexLoading = null;
+    });
+  }
+  const idx = await workflowFormSchemaIndexLoading;
+  return idx.get(code) || null;
 }
 
 function extractErrorSummary(payload: Record<string, any>) {
@@ -238,72 +612,6 @@ function pushDebugEvent(action: string, err: unknown) {
   }
 }
 
-function isLikelyStartNode(n: any) {
-  if (String(n?.properties?.bizType || '').trim() === 'start') return true;
-  const biz = inferBizTypeFromGraphNode(n);
-  if (biz === 'start') return true;
-  const tv = String(n?.text?.value ?? n?.text ?? '').trim();
-  return /发起|开始|起草/.test(tv);
-}
-
-type WfRuntimeNodeBinding = {
-  formCode: string;
-  formName: string;
-  formSource?: string;
-  extFormKey?: string;
-  fieldRules?: Record<string, any>;
-  workflowNoPrefix?: string;
-};
-
-function parseFormBindingRecord(fb: Record<string, any>): WfRuntimeNodeBinding | null {
-  const formCode = String(fb.formCode || '').trim();
-  const formName = String(fb.formName || '').trim();
-  const formSource = String(fb.formSource || '').trim();
-  const extFormKey = String(fb.extFormKey || '').trim();
-  if (!formCode && !(formSource === 'ext' && extFormKey)) return null;
-  return {
-    formCode,
-    formName: formName || formCode || extFormKey,
-    formSource,
-    extFormKey,
-    fieldRules: (fb.fieldRules || {}) as Record<string, any>,
-    workflowNoPrefix: String(fb.workflowNoPrefix || '').trim() || undefined,
-  };
-}
-
-function getStartNodeBinding(definitionJson: string): WfRuntimeNodeBinding | null {
-  try {
-    const parsed = JSON.parse(definitionJson) as Record<string, any>;
-    const graphData = (parsed?.graphData ?? {}) as { nodes?: any[] };
-    const nodes = Array.isArray(graphData.nodes) ? graphData.nodes : [];
-    const start = nodes.find((n) => isLikelyStartNode(n)) ?? nodes[0];
-    if (!start) return null;
-    const fb = (start?.properties?.formBinding ?? {}) as Record<string, any>;
-    return parseFormBindingRecord(fb);
-  } catch {
-    return null;
-  }
-}
-
-/** 按节点 id 读取 graphData 中的 formBinding（与流程管理/预览一致） */
-function getNodeBindingFromDefinition(
-  definitionJson: string,
-  nodeId: string,
-): WfRuntimeNodeBinding | null {
-  const id = String(nodeId || '').trim();
-  if (!id || !definitionJson.trim()) return null;
-  try {
-    const parsed = JSON.parse(definitionJson) as Record<string, any>;
-    const nodes = (parsed?.graphData?.nodes ?? []) as any[];
-    const node = Array.isArray(nodes) ? nodes.find((n) => String(n?.id ?? '').trim() === id) : null;
-    if (!node) return null;
-    const fb = (node?.properties?.formBinding ?? {}) as Record<string, any>;
-    return parseFormBindingRecord(fb);
-  } catch {
-    return null;
-  }
-}
-
 async function resetBoundFormState(hint: string) {
   startBindingHint.value = hint;
   startBoundFormCode.value = '';
@@ -315,7 +623,9 @@ async function resetBoundFormState(hint: string) {
   startTabsConfig.value = [];
   startTabsInitialMainValues.value = {};
   startTabsFieldRulesMap.value = {};
-  await startBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+  startMetaWorkflowNoPrefix.value = 'WF';
+  refreshStartFixedMeta({ keepWorkflowNo: false, workflowNoPrefix: startMetaWorkflowNoPrefix.value });
+  await startBoundFormApi.setState(buildStartFormUiState([] as VbenFormSchema[]));
   await startBoundFormApi.setValues({});
 }
 
@@ -339,21 +649,60 @@ function parseWorkflowGraphNodes(defJson: string): Array<{ id: string; title: st
   }
 }
 
+function applyRuntimeDraftByKey(key: string) {
+  const k = String(key || '').trim();
+  if (!k) return;
+  try {
+    const raw = localStorage.getItem(k);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as {
+      definition?: Record<string, unknown> | string;
+      processCode?: string;
+      processName?: string;
+    };
+    const defObj = parsed?.definition;
+    const definitionJson =
+      typeof defObj === 'string'
+        ? defObj.trim()
+        : defObj && typeof defObj === 'object'
+          ? JSON.stringify(defObj)
+          : '';
+    if (!definitionJson) return;
+    runtimeDraftDefinitionJson.value = definitionJson;
+    // 草稿定义优先用于运行台渲染（流程图/节点表单绑定）
+    runtimeDefinitionJson.value = definitionJson;
+    if (!processCode.value.trim() && parsed?.processCode) {
+      processCode.value = String(parsed.processCode || '').trim();
+    }
+    if (parsed?.processName) {
+      loadedProcessName.value = String(parsed.processName || '').trim();
+    }
+  } catch {
+    runtimeDraftDefinitionJson.value = '';
+  }
+}
+
 async function loadStartBoundForm() {
   startBindingLoading.value = true;
   try {
-    const defId = processDefId.value.trim();
-    if (!defId) {
-      runtimeDefinitionJson.value = '';
-      loadedProcessName.value = '';
-      loadedProcessCode.value = '';
-      await resetBoundFormState('未传 processDefId，无法读取发起节点绑定表单，使用 JSON 方式发起。');
-      return;
+    const draftDefinitionJson = runtimeDraftDefinitionJson.value.trim();
+    let definitionJson = draftDefinitionJson;
+    if (!definitionJson) {
+      const defId = processDefId.value.trim();
+      if (!defId) {
+        runtimeDefinitionJson.value = '';
+        loadedProcessName.value = '';
+        loadedProcessCode.value = '';
+        await resetBoundFormState('未传 processDefId，无法读取发起节点绑定表单，使用 JSON 方式发起。');
+        return;
+      }
+      const proc = await wfEngineGetProcess(defId);
+      loadedProcessName.value = String((proc as { processDef?: { processName?: string; processCode?: string } })?.processDef?.processName ?? '').trim();
+      loadedProcessCode.value = String((proc as { processDef?: { processName?: string; processCode?: string } })?.processDef?.processCode ?? '').trim();
+      definitionJson = String(proc?.version?.definitionJson || '').trim();
+    } else {
+      loadedProcessCode.value = processCode.value.trim();
     }
-    const proc = await wfEngineGetProcess(defId);
-    loadedProcessName.value = String((proc as { processDef?: { processName?: string; processCode?: string } })?.processDef?.processName ?? '').trim();
-    loadedProcessCode.value = String((proc as { processDef?: { processName?: string; processCode?: string } })?.processDef?.processCode ?? '').trim();
-    const definitionJson = String(proc?.version?.definitionJson || '').trim();
     runtimeDefinitionJson.value = definitionJson;
     if (!definitionJson) {
       await resetBoundFormState('当前流程版本无定义内容，使用 JSON 方式发起。');
@@ -375,7 +724,7 @@ async function loadStartBoundForm() {
       startBoundFormMode.value = 'ext';
       startExtRuntimeRoot.value = comp as any;
       startBindingHint.value = `已加载发起节点硬编码表单：${binding.formName || binding.extFormKey}`;
-      await startBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+      await startBoundFormApi.setState(buildStartFormUiState([] as VbenFormSchema[]));
       await startBoundFormApi.setValues({});
       return;
     }
@@ -384,9 +733,7 @@ async function loadStartBoundForm() {
       await resetBoundFormState('发起节点表单编码为空，使用 JSON 方式发起。');
       return;
     }
-    const listRaw = (await getWorkflowFormSchemaList()) as any;
-    const formRows = (Array.isArray(listRaw) ? listRaw : listRaw?.items || listRaw?.records || []) as Array<Record<string, any>>;
-    const rec = formRows.find((x) => String(x?.code || '').trim() === formCode);
+    const rec = await getWorkflowFormSchemaByCode(formCode);
     const schemaJson = String(rec?.schemaJson || '').trim();
     if (!schemaJson) {
       await resetBoundFormState(`未找到表单设计器定义：${formCode}`);
@@ -399,7 +746,14 @@ async function loadStartBoundForm() {
     }
     const normalized = normalizeSchemaForPreview(parsed.srcSchema);
     const decorated = applyFieldRulesToSchemaPlain(normalized, binding.fieldRules || {});
-    startFormSchema.value = decorated as VbenFormSchema[];
+    const startRequiredMainKeys = collectRequiredFieldKeysFromRules(
+      (binding.fieldRules || {}) as Record<string, WfNodeFormFieldRule>,
+    ).mainKeys;
+    startFormSchema.value = applyRequiredMissingStyleToSchema(
+      decorated as VbenFormSchema[],
+      startRequiredMainKeys,
+      [],
+    ) as VbenFormSchema[];
     startBoundFormMode.value = 'designer';
     startExtRuntimeRoot.value = null;
 
@@ -408,45 +762,66 @@ async function loadStartBoundForm() {
     startTabsConfig.value = layoutTabs ? (jsonSafeClone(parsed.tabs) as TabTableConfig[]) : [];
     startTabsFieldRulesMap.value = ((binding.fieldRules || {}) as Record<
       string,
-      'hidden' | 'readonly' | 'visible'
+      WfNodeFormFieldRule
     >);
 
-    const seedUser = {
-      ...(userStore.userInfo || {}),
-      realName: mockStarterName.value || (userStore.userInfo as any)?.realName,
-      name: mockStarterName.value || (userStore.userInfo as any)?.name,
-      employeeCode: mockStarterUserId.value || (userStore.userInfo as any)?.employeeCode,
-      employeeNo: mockStarterUserId.value || (userStore.userInfo as any)?.employeeNo,
-      userCode: mockStarterUserId.value || (userStore.userInfo as any)?.userCode,
-      username: mockStarterUserId.value || (userStore.userInfo as any)?.username,
-      deptName: mockStarterDeptName.value || (userStore.userInfo as any)?.deptName,
-      departmentName: mockStarterDeptName.value || (userStore.userInfo as any)?.departmentName,
-      dutyName: mockStarterPositionName.value || (userStore.userInfo as any)?.dutyName,
-      positionName: mockStarterPositionName.value || (userStore.userInfo as any)?.positionName,
-      postName: mockStarterPositionName.value || (userStore.userInfo as any)?.postName,
-      position: mockStarterPositionName.value || (userStore.userInfo as any)?.position,
-    } as Record<string, any>;
+    await ensureUserInfoForWorkflowRuntime();
+    const seedUser = mergeUserInfoForWorkflow();
+    startMetaWorkflowNoPrefix.value =
+      String(parsed.workflowNoPrefix || binding.workflowNoPrefix || '').trim() || 'WF';
     const builtins = buildWorkflowBuiltinValuesFromUser(startFormSchema.value as VbenFormSchema[], {
       userInfo: seedUser,
-      workflowNoPrefix: parsed.workflowNoPrefix || binding.workflowNoPrefix,
+      workflowNoPrefix: startMetaWorkflowNoPrefix.value,
+      processTitle: loadedProcessName.value,
     });
     let jsonValues: Record<string, any> = {};
-    try {
-      jsonValues = mainFormJson.value.trim()
-        ? (JSON.parse(mainFormJson.value) as Record<string, any>)
-        : {};
-    } catch {
-      jsonValues = {};
+    if (submittedStartMainForm.value && typeof submittedStartMainForm.value === 'object') {
+      jsonValues = jsonSafeClone(submittedStartMainForm.value) as Record<string, any>;
+    } else {
+      try {
+        jsonValues = mainFormJson.value.trim()
+          ? (JSON.parse(mainFormJson.value) as Record<string, any>)
+          : {};
+      } catch {
+        jsonValues = {};
+      }
     }
-    const mergedMain = { ...builtins, ...jsonValues };
+    const buildOpts = {
+      userInfo: seedUser,
+      workflowNoPrefix: startMetaWorkflowNoPrefix.value,
+      processTitle: loadedProcessName.value,
+    };
+    const mergedMain = supplementBuiltinValuesByFieldLabel(
+      startFormSchema.value as VbenFormSchema[],
+      applyProcessTitleBySchemaLabel(
+        startFormSchema.value as VbenFormSchema[],
+        restoreBuiltinValuesAfterJsonMerge(builtins, { ...builtins, ...jsonValues }, startFormSchema.value as VbenFormSchema[]),
+        loadedProcessName.value,
+      ),
+      seedUser,
+      buildOpts,
+    );
     startTabsInitialMainValues.value = mergedMain;
+    refreshStartFixedMeta({ keepWorkflowNo: false, workflowNoPrefix: startMetaWorkflowNoPrefix.value });
+    const mergedMainFlowNo = Object.entries(mergedMain).find(([k, v]) => {
+      if (!/flow|no|number|编号/i.test(k)) return false;
+      const s = String(v ?? '').trim();
+      return /^[A-Za-z]{1,6}\d{6,}$/.test(s);
+    })?.[1];
+    if (String(mergedMainFlowNo ?? '').trim()) {
+      startMetaWorkflowNo.value = String(mergedMainFlowNo ?? '').trim();
+    }
 
     if (layoutTabs) {
-      await startBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+      await startBoundFormApi.setState(buildStartFormUiState([] as VbenFormSchema[]));
       await startBoundFormApi.setValues({});
+      if (submittedStartTabsData.value && Object.keys(submittedStartTabsData.value).length) {
+        await nextTick();
+        startTabsTablePreviewRef.value?.loadTabsDataFromObject?.(submittedStartTabsData.value);
+      }
       startBindingHint.value = `已按发起节点「上表+页签表格」渲染：${binding.formName || formCode}`;
     } else {
-      await startBoundFormApi.setState({ schema: startFormSchema.value as VbenFormSchema[] });
+      await startBoundFormApi.setState(buildStartFormUiState(startFormSchema.value as VbenFormSchema[]));
       await nextTick();
       await startBoundFormApi.setValues(mergedMain);
       startBindingHint.value = `已按发起节点绑定表单渲染：${binding.formName || formCode}`;
@@ -461,6 +836,7 @@ async function loadStartBoundForm() {
 
 async function resetTaskBoundFormState(hint: string) {
   taskBindingHint.value = hint;
+  taskBoundFormReuseError.value = '';
   taskBoundFormMode.value = 'none';
   taskFormSchema.value = [];
   taskExtRuntimeRoot.value = null;
@@ -469,52 +845,52 @@ async function resetTaskBoundFormState(hint: string) {
   taskTabsInitialMainValues.value = {};
   taskTabsFieldRulesMap.value = {};
   taskPendingTabsData.value = {};
-  await taskBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+  await taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
   await taskBoundFormApi.setValues({});
 }
 
+function extractFlowNoFromObject(obj: Record<string, any> | null | undefined): string {
+  if (!obj || typeof obj !== 'object') return '';
+  const entries = Object.entries(obj);
+  const strict = entries.find(([k, v]) => {
+    if (!/(流程编号|流程\/单号|流程单号|单号|flowNo)/i.test(k)) return false;
+    return String(v ?? '').trim() !== '';
+  });
+  if (strict) return String(strict[1] ?? '').trim();
+  const loose = entries.find(([k, v]) => {
+    if (!/flow|no|number|编号/i.test(k)) return false;
+    return String(v ?? '').trim() !== '';
+  });
+  return String(loose?.[1] ?? '').trim();
+}
+
+const mobileStartHeaderRows = computed(() => [
+  { key: 'flowNo', label: '流程编号', value: startMetaDisplayFlowNo.value || '—' },
+  { key: 'processName', label: '流程名称', value: loadedProcessName.value || primaryFlowCardTitle.value || '—' },
+  { key: 'starter', label: '发起人', value: startMetaStarter.value || '—' },
+  { key: 'startTime', label: '发起时间', value: startMetaTime.value || '—' },
+  { key: 'employeeNo', label: '工号', value: startMetaDisplayEmployeeNo.value || '—' },
+  { key: 'dept', label: '部门', value: startMetaDisplayDept.value || '—' },
+  { key: 'position', label: '岗位', value: startMetaDisplayPosition.value || '—' },
+  { key: 'status', label: '当前状态', value: '发起中', isStatus: true },
+  { key: 'node', label: '当前节点', value: startMetaNodeName.value || '—' },
+]);
+
 function parseLatestMainForm(): Record<string, any> {
-  const raw = instanceDetail.value?.latestData?.main_form_json;
-  if (raw === null || raw === undefined) return {};
-  try {
-    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-      return raw as Record<string, any>;
-    }
-    const s = String(raw).trim();
-    if (!s) return {};
-    return JSON.parse(s) as Record<string, any>;
-  } catch {
-    return {};
-  }
+  return coerceLatestMainForm(instanceDetail.value?.latestData);
 }
 
 function parseLatestTabsData(): Record<string, any[]> {
-  const raw = instanceDetail.value?.latestData?.tabs_data_json;
-  if (raw === null || raw === undefined) return {};
-  try {
-    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-      const o = raw as Record<string, unknown>;
-      const out: Record<string, any[]> = {};
-      for (const k of Object.keys(o)) {
-        if (Array.isArray(o[k])) out[k] = o[k] as any[];
-      }
-      return out;
-    }
-    const s = String(raw).trim();
-    if (!s) return {};
-    const o = JSON.parse(s) as Record<string, any>;
-    const out: Record<string, any[]> = {};
-    for (const k of Object.keys(o)) {
-      if (Array.isArray(o[k])) out[k] = o[k];
-    }
-    return out;
-  } catch {
-    return {};
-  }
+  return coerceLatestTabsData(instanceDetail.value?.latestData);
 }
 
 async function ensureRuntimeDefinitionJson() {
   if (runtimeDefinitionJson.value.trim()) return;
+  const draft = runtimeDraftDefinitionJson.value.trim();
+  if (draft) {
+    runtimeDefinitionJson.value = draft;
+    return;
+  }
   let pid = processDefId.value.trim();
   if (!pid && instanceDetail.value?.instance) {
     const inst = instanceDetail.value.instance as Record<string, unknown>;
@@ -552,14 +928,87 @@ async function loadTaskBoundForm() {
     await resetTaskBoundFormState('');
     return;
   }
-  const todo = todoRows.value[0] as WfEngineRuntimeTodoItem | undefined;
-  if (!todo) {
+  const todo = currentPrimaryTodo.value as WfEngineRuntimeTodoItem | undefined;
+  const readonlyNodeId = String(resolvedCurrentNodeId.value || '').trim();
+  const nodeId = String(todo?.nodeId || readonlyNodeId || '').trim();
+  const nodeName =
+    String(todo?.nodeName || '').trim() ||
+    runtimeNodeList.value.find((x) => x.id === nodeId)?.title ||
+    nodeId;
+  const isReadonlyPreview = !todo && !!nodeId;
+  const isStartNodeReadonlyPreview =
+    isReadonlyPreview &&
+    !!runtimeStartNodeId.value.trim() &&
+    nodeId === runtimeStartNodeId.value.trim();
+  if (!nodeId) {
     taskBoundFormMode.value = 'none';
     await resetTaskBoundFormState('暂无待办，仅查看流程信息。');
     return;
   }
-  const nodeId = String(todo.nodeId || '').trim();
+  /**
+   * 提交后常见场景：当前仍停留在「发起申请」节点，且仅用于只读预览；
+   * 直接复用已加载的发起表单结构，避免再次拉取设计器列表导致超时后降级为快照。
+   */
+  if (isStartNodeReadonlyPreview && startBoundFormMode.value === 'designer' && startFormSchema.value.length) {
+    taskBoundFormLoading.value = true;
+    taskBoundFormReuseError.value = '';
+    try {
+      taskBoundFormMode.value = 'designer';
+      taskExtRuntimeRoot.value = null;
+      const taskRequiredMainKeysFromStart = collectRequiredFieldKeysFromRules(
+        jsonSafeClone(startTabsFieldRulesMap.value) as Record<string, WfNodeFormFieldRule>,
+      ).mainKeys;
+      taskFormSchema.value = applyRequiredMissingStyleToSchema(
+        jsonSafeClone(startFormSchema.value) as VbenFormSchema[],
+        taskRequiredMainKeysFromStart,
+        [],
+      ) as VbenFormSchema[];
+      taskLayoutIsTabs.value = !!(startLayoutIsTabs.value && startTabsConfig.value.length);
+      taskTabsConfig.value = taskLayoutIsTabs.value
+        ? (jsonSafeClone(startTabsConfig.value) as TabTableConfig[])
+        : [];
+      taskTabsFieldRulesMap.value = jsonSafeClone(startTabsFieldRulesMap.value) as Record<
+        string,
+        WfNodeFormFieldRule
+      >;
+      const latestMain = parseLatestMainForm();
+      const previewMain =
+        submittedStartMainForm.value && Object.keys(submittedStartMainForm.value).length
+          ? (jsonSafeClone(submittedStartMainForm.value) as Record<string, any>)
+          : latestMain;
+      taskTabsInitialMainValues.value = latestMain;
+      taskTabsInitialMainValues.value = previewMain;
+      taskPendingTabsData.value = taskLayoutIsTabs.value
+        ? submittedStartTabsData.value && Object.keys(submittedStartTabsData.value).length
+          ? (jsonSafeClone(submittedStartTabsData.value) as Record<string, any[]>)
+          : parseLatestTabsData()
+        : {};
+      if (taskLayoutIsTabs.value) {
+        taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
+        taskBoundFormApi.setValues({});
+        await nextTick();
+        if (Object.keys(taskPendingTabsData.value).length) {
+          taskTabsTablePreviewRef.value?.loadTabsDataFromObject?.(taskPendingTabsData.value);
+        }
+      } else {
+        taskBoundFormApi.setState(buildTaskFormUiState(taskFormSchema.value as VbenFormSchema[]));
+        await nextTick();
+        taskBoundFormApi.setValues(previewMain);
+      }
+      taskBindingHint.value = '只读预览｜当前节点为发起节点，沿用发起表单展示已提交数据。';
+      return;
+    } catch (err) {
+      taskBoundFormMode.value = 'snapshot';
+      taskBoundFormReuseError.value = String((err as Error)?.message || '未知错误');
+      taskBindingHint.value = '复用发起表单失败，已降级为快照展示。';
+      pushDebugEvent('复用发起节点表单', err);
+      return;
+    } finally {
+      taskBoundFormLoading.value = false;
+    }
+  }
   taskFormLoadLatestSeq += 1;
+  taskBoundFormReuseError.value = '';
   const curLoadSeq = taskFormLoadLatestSeq;
   taskFormLoadInFlight++;
   taskBoundFormLoading.value = true;
@@ -572,7 +1021,7 @@ async function loadTaskBoundForm() {
       taskBoundFormLoading.value = false;
       taskFormLoadInFlight = 0;
     }
-  }, 20_000);
+  }, 65_000);
   try {
     taskExtRuntimeRoot.value = null;
     taskFormSchema.value = [];
@@ -584,15 +1033,24 @@ async function loadTaskBoundForm() {
     const defJson = runtimeDefinitionJson.value.trim();
     if (!defJson) {
       taskBoundFormMode.value = 'snapshot';
-      await taskBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+      await taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
       taskBindingHint.value = '未加载到流程定义，已展示主表快照。';
       return;
     }
-    const binding = getNodeBindingFromDefinition(defJson, nodeId);
+    const { binding, usedStartFallback, nodeFoundInGraph } = resolveNodeFormBindingWithStartFallback(
+      defJson,
+      nodeId,
+    );
     if (!binding) {
       taskBoundFormMode.value = 'snapshot';
-      await taskBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
-      taskBindingHint.value = `节点「${todo.nodeName || nodeId}」未绑定表单，已展示主表快照。`;
+      await taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
+      const knownIds = runtimeNodeList.value.map((n) => String(n.id || '').trim()).filter(Boolean);
+      const inDefinition = knownIds.includes(String(nodeId || '').trim());
+      if (!nodeFoundInGraph) {
+        taskBindingHint.value = `节点「${nodeName || nodeId}」未绑定表单，已展示主表快照。（nodeId=${nodeId || '—'}；定义中${inDefinition ? '存在该节点' : '找不到该节点'}）`;
+      } else {
+        taskBindingHint.value = `节点「${nodeName || nodeId}」与发起节点均未绑定表单，已展示主表快照。（nodeId=${nodeId || '—'}）`;
+      }
       return;
     }
     if (binding.formSource === 'ext' && binding.extFormKey) {
@@ -605,9 +1063,9 @@ async function loadTaskBoundForm() {
       taskBoundFormMode.value = 'ext';
       taskExtRuntimeRoot.value = comp as any;
       taskFormSchema.value = [];
-      await taskBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+      await taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
       await taskBoundFormApi.setValues({});
-      taskBindingHint.value = `当前节点硬编码表单：${binding.formName || binding.extFormKey}`;
+      taskBindingHint.value = `${isReadonlyPreview ? '只读预览｜' : ''}当前节点硬编码表单：${binding.formName || binding.extFormKey}`;
       return;
     }
     const formCode = String(binding.formCode || '').trim();
@@ -616,13 +1074,57 @@ async function loadTaskBoundForm() {
       taskBindingHint.value = '节点绑定表单编码为空，已展示主表快照。';
       return;
     }
-    const listRaw = (await withTimeout(
-      getWorkflowFormSchemaList(),
+    /**
+     * 提速：若审批节点与发起节点复用同一设计器表单，直接复用已加载的发起 schema，
+     * 避免再次请求表单定义列表（该请求在部分环境会非常慢）。
+     */
+    if (
+      startBoundFormMode.value === 'designer' &&
+      startFormSchema.value.length > 0 &&
+      String(startBoundFormCode.value || '').trim() === formCode
+    ) {
+      const reused = applyFieldRulesToSchemaPlain(
+        jsonSafeClone(startFormSchema.value) as VbenFormSchema[],
+        binding.fieldRules || {},
+      );
+      const taskRequiredMainKeys = collectRequiredFieldKeysFromRules(
+        (binding.fieldRules || {}) as Record<string, WfNodeFormFieldRule>,
+      ).mainKeys;
+      taskFormSchema.value = applyRequiredMissingStyleToSchema(
+        reused as VbenFormSchema[],
+        taskRequiredMainKeys,
+        [],
+      ) as VbenFormSchema[];
+      taskBoundFormMode.value = 'designer';
+      taskExtRuntimeRoot.value = null;
+      const layoutTabs = !!(startLayoutIsTabs.value && startTabsConfig.value.length);
+      taskLayoutIsTabs.value = layoutTabs;
+      taskTabsConfig.value = layoutTabs ? (jsonSafeClone(startTabsConfig.value) as TabTableConfig[]) : [];
+      taskTabsFieldRulesMap.value = ((binding.fieldRules || {}) as Record<
+        string,
+        WfNodeFormFieldRule
+      >);
+      taskPendingTabsData.value = layoutTabs ? parseLatestTabsData() : {};
+      const latest = parseLatestMainForm();
+      taskTabsInitialMainValues.value = latest;
+      if (layoutTabs) {
+        taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
+        taskBoundFormApi.setValues({});
+      } else {
+        taskBoundFormApi.setState(buildTaskFormUiState(taskFormSchema.value as VbenFormSchema[]));
+        await nextTick();
+        taskBoundFormApi.setValues(latest);
+      }
+      taskBindingHint.value = `${isReadonlyPreview ? '只读预览｜' : ''}当前节点复用发起表单（快速加载）：${
+        binding.formName || formCode
+      }`;
+      return;
+    }
+    const rec = await withTimeout(
+      getWorkflowFormSchemaByCode(formCode),
       45_000,
-      '加载表单设计器列表',
-    )) as any;
-    const formRows = (Array.isArray(listRaw) ? listRaw : listRaw?.items || listRaw?.records || []) as Array<Record<string, any>>;
-    const rec = formRows.find((x) => String(x?.code || '').trim() === formCode);
+      '加载表单设计器定义',
+    );
     const schemaJson = String(rec?.schemaJson || '').trim();
     if (!schemaJson) {
       taskBoundFormMode.value = 'snapshot';
@@ -637,7 +1139,14 @@ async function loadTaskBoundForm() {
     }
     const normalized = normalizeSchemaForPreview(parsed.srcSchema);
     const decorated = applyFieldRulesToSchemaPlain(normalized, binding.fieldRules || {});
-    taskFormSchema.value = decorated as VbenFormSchema[];
+    const taskRequiredMainKeys = collectRequiredFieldKeysFromRules(
+      (binding.fieldRules || {}) as Record<string, WfNodeFormFieldRule>,
+    ).mainKeys;
+    taskFormSchema.value = applyRequiredMissingStyleToSchema(
+      decorated as VbenFormSchema[],
+      taskRequiredMainKeys,
+      [],
+    ) as VbenFormSchema[];
     taskBoundFormMode.value = 'designer';
 
     const layoutTabs = !!(parsed.layoutIsTabs && parsed.tabs?.length);
@@ -645,7 +1154,7 @@ async function loadTaskBoundForm() {
     taskTabsConfig.value = layoutTabs ? (jsonSafeClone(parsed.tabs) as TabTableConfig[]) : [];
     taskTabsFieldRulesMap.value = ((binding.fieldRules || {}) as Record<
       string,
-      'hidden' | 'readonly' | 'visible'
+      WfNodeFormFieldRule
     >);
     taskPendingTabsData.value = layoutTabs ? parseLatestTabsData() : {};
 
@@ -671,12 +1180,12 @@ async function loadTaskBoundForm() {
        * 上表+页签场景由 FormTabsTablePreview 自身渲染与回填；
        * 不再等待 taskBoundFormApi，避免在某些表单下被无关渲染链路阻塞。
        */
-      taskBoundFormApi.setState({ schema: [] as VbenFormSchema[] });
+      taskBoundFormApi.setState(buildTaskFormUiState([] as VbenFormSchema[]));
       taskBoundFormApi.setValues({});
     } else {
       await withTimeout(
         (async () => {
-          await taskBoundFormApi.setState({ schema: taskFormSchema.value as VbenFormSchema[] });
+          await taskBoundFormApi.setState(buildTaskFormUiState(taskFormSchema.value as VbenFormSchema[]));
           await nextTick();
           await taskBoundFormApi.setValues(mergedMain);
         })(),
@@ -684,9 +1193,13 @@ async function loadTaskBoundForm() {
         '渲染办理表单',
       );
     }
-    taskBindingHint.value = layoutTabs
-      ? `当前节点「上表+页签表格」：${binding.formName || formCode}`
-      : `当前节点绑定表单：${binding.formName || formCode}`;
+    taskBindingHint.value = `${isReadonlyPreview ? '只读预览｜' : ''}${
+      usedStartFallback ? '本节点未单独绑定表单，已沿用发起节点表单｜' : ''
+    }${
+      layoutTabs
+        ? `当前节点「上表+页签表格」：${binding.formName || formCode}`
+        : `当前节点绑定表单：${binding.formName || formCode}`
+    }`;
   } catch (err) {
     taskBoundFormMode.value = 'snapshot';
     taskBindingHint.value = `加载节点表单失败：${(err as Error).message}`;
@@ -738,11 +1251,49 @@ const businessDataRows = computed(() => {
 });
 
 const resolvedCurrentNodeId = computed(() => {
-  const t = todoRows.value[0]?.nodeId;
-  if (t) return String(t);
+  const tasks = (instanceDetail.value?.tasks as Array<Record<string, any>> | undefined) || [];
+  function taskStatusNum(x: any) {
+    const raw = x?.status ?? x?.status_num ?? x?.statusNum ?? x?.task_status ?? x?.taskStatus;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : -1;
+  }
+  function taskNodeId(x: any) {
+    return String(
+      x?.node_id ??
+        x?.nodeId ??
+        x?.node_id_str ??
+        x?.node_code ??
+        x?.nodeCode ??
+        x?.current_node_id ??
+        '',
+    ).trim();
+  }
+  const pending = tasks.find((x) => taskStatusNum(x) === 0);
+  if (pending) {
+    const nid = taskNodeId(pending);
+    if (nid) return nid;
+  }
+  const latestNodeId = String(
+    (instanceDetail.value as any)?.latestData?.node_id ?? (instanceDetail.value as any)?.latestData?.nodeId ?? '',
+  ).trim();
+  if (latestNodeId) return latestNodeId;
+  // 兜底：取最近一条任务的 nodeId（有些接口不返回 pending=0，但会带 tasks 列表）
+  const latest = tasks
+    .map((x) => ({
+      raw: x,
+      nodeId: taskNodeId(x),
+      at: toTimeMs((x as any)?.received_at ?? (x as any)?.receivedAt ?? (x as any)?.completed_at ?? (x as any)?.completedAt),
+    }))
+    .filter((x) => !!x.nodeId)
+    .sort((a, b) => (Number.isFinite(b.at) ? b.at : 0) - (Number.isFinite(a.at) ? a.at : 0))[0];
+  if (latest?.nodeId) return latest.nodeId;
   const raw = instanceDetail.value?.instance?.current_node_ids;
-  if (!raw) return '';
-  return String(raw).split(',')[0].trim();
+  if (raw) {
+    const first = String(raw).split(',')[0].trim();
+    if (first) return first;
+  }
+  const firstTodoNode = String(todoRows.value[0]?.nodeId ?? '').trim();
+  return firstTodoNode;
 });
 
 const runtimeActiveStepIndex = computed(() => {
@@ -833,15 +1384,21 @@ const defaultRejectTargetNodeId = computed(
 );
 
 const instanceMetaStatus = computed(() => {
-  const st = instanceDetail.value?.instance?.status;
-  if (st === 0 || st === '0') return { text: '运行中', color: 'processing' as const };
-  if (st === 1 || st === '1') return { text: '已完成', color: 'success' as const };
-  return { text: String(st ?? '—'), color: 'default' as const };
+  const st = Number((instanceDetail.value as any)?.instance?.status ?? -1);
+  if (st === 2) return { text: '已完成', color: 'success' as const };
+  if (st === 3) return { text: '已驳回', color: 'error' as const };
+  if (st === 4) return { text: '已撤回', color: 'default' as const };
+  return { text: '运行中', color: 'processing' as const };
 });
 
-const currentPrimaryTodo = computed(
-  () => todoRows.value[0] as WfEngineRuntimeTodoItem | undefined,
-);
+const currentPrimaryTodo = computed(() => {
+  const cur = String(resolvedCurrentNodeId.value || '').trim();
+  if (cur) {
+    const hit = todoRows.value.find((x) => String(x?.nodeId || '').trim() === cur);
+    return hit as WfEngineRuntimeTodoItem | undefined;
+  }
+  return todoRows.value[0] as WfEngineRuntimeTodoItem | undefined;
+});
 
 const pageDescription = computed(() => {
   if (inspectInstanceId.value.trim()) return '查看流程信息与进度，办理待办任务。';
@@ -856,6 +1413,121 @@ const primaryFlowCardTitle = computed(() => {
     return String(n || '').trim() || '流程信息';
   }
   return loadedProcessName.value || '发起申请';
+});
+
+const startMetaStarter = computed(() => {
+  const u = mergeUserInfoForWorkflow();
+  return String(
+    u.realName || u.name || u.username || u.employeeCode || u.employeeNo || u.userId || '',
+  ).trim();
+});
+const startMetaDisplayFlowNo = computed(
+  () =>
+    businessKey.value.trim() ||
+    startMetaWorkflowNo.value.trim() ||
+    startSubmittedInstanceNo.value.trim() ||
+    '—',
+);
+const startMetaDisplayDept = computed(() => startMetaDept.value.trim() || '—');
+const startMetaDisplayPosition = computed(() => startMetaPosition.value.trim() || '—');
+const startMetaDisplayEmployeeNo = computed(() => startMetaEmployeeNo.value.trim() || '—');
+
+const startMetaTime = computed(() => new Date().toLocaleString());
+
+const startMetaNodeName = computed(
+  () => runtimeNodeNameMap.value[resolvedCurrentNodeId.value] || '发起申请',
+);
+
+function pickStringByKeys(
+  source: null | Record<string, any> | undefined,
+  keys: string[],
+): string {
+  if (!source) return '';
+  for (const k of keys) {
+    const v = source[k];
+    if (v !== undefined && v !== null && String(v).trim()) {
+      return String(v).trim();
+    }
+  }
+  return '';
+}
+
+const instanceMainFormObject = computed<Record<string, any>>(() => parseLatestMainForm());
+
+const instanceMetaDisplayFlowNo = computed(
+  () =>
+    String((instanceDetail.value?.instance as any)?.business_key || '').trim() ||
+    String((instanceDetail.value?.instance as any)?.businessKey || '').trim() ||
+    businessKey.value.trim() ||
+    startSubmittedHeaderFlowNo.value.trim() ||
+    extractFlowNoFromObject(submittedStartMainForm.value) ||
+    extractFlowNoFromObject(instanceMainFormObject.value) ||
+    startSubmittedInstanceNo.value.trim() ||
+    String((instanceDetail.value?.instance as any)?.instance_no || '').trim() ||
+    '—',
+);
+
+const instanceMetaDisplayStarter = computed(() => {
+  const inst = (instanceDetail.value?.instance || {}) as Record<string, any>;
+  const form = instanceMainFormObject.value || {};
+  const fromInstance = pickStringByKeys(inst, [
+    'starter_name',
+    'starterName',
+    'starter_real_name',
+    'starterRealName',
+  ]);
+  const fromForm = pickStringByKeys(form, ['name', 'realName', '姓名', 'applicant', '申请人']);
+  const fromCode = pickStringByKeys(inst, ['starter_emp_id', 'starterEmpId', 'starter_user_id']);
+  const prefer = fromInstance || fromForm;
+  if (prefer) return prefer;
+  if (fromCode && !isLikelyGuidStr(fromCode)) return fromCode;
+  return '—';
+});
+
+const instanceMetaDisplayEmployeeNo = computed(() => {
+  const inst = (instanceDetail.value?.instance || {}) as Record<string, any>;
+  const form = instanceMainFormObject.value || {};
+  const v =
+    pickStringByKeys(form, [
+      'EMP_ID',
+      'employeeNo',
+      'employeeCode',
+      'empNo',
+      'workNo',
+      '工号',
+    ]) ||
+    pickStringByKeys(inst, ['starter_emp_id', 'starterEmpId', 'starter_user_id']);
+  if (!v || isLikelyGuidStr(v)) return '—';
+  return v;
+});
+
+const instanceMetaDisplayDept = computed(() => {
+  const form = instanceMainFormObject.value || {};
+  return (
+    pickStringByKeys(form, [
+      'long_name',
+      'deptName',
+      'departmentName',
+      'department',
+      'dept',
+      '部门',
+    ]) || '—'
+  );
+});
+
+const instanceMetaDisplayPosition = computed(() => {
+  const form = instanceMainFormObject.value || {};
+  return (
+    pickStringByKeys(form, [
+      'positionName',
+      'dutyName',
+      'postName',
+      'position',
+      'post',
+      '岗位',
+      '职位',
+    ]) || '—'
+  );
 });
 
 const realLoginSummary = computed(() => {
@@ -981,9 +1653,11 @@ const timelineRowsCurrentRound = computed(() => {
   });
 });
 
-const timelineViewRows = computed(() =>
-  (timelineRows.value || []).map((row) => {
-    const actor = String(row.operator_name || row.operator_user_id || '系统');
+const timelineViewRows = computed(() => {
+  const dm = operatorDisplayMap.value;
+  return (timelineRows.value || []).map((row) => {
+    const actorRaw = formatOperatorLabel(dm, row.operator_name, row.operator_user_id);
+    const actor = actorRaw === '—' ? '系统' : actorRaw;
     const node = String(row.node_id || row.node_name || '当前节点');
     const when = row.action_at ? new Date(row.action_at).toLocaleString() : '—';
     const actionText = pickTimelineActionText(row);
@@ -1010,10 +1684,11 @@ const timelineViewRows = computed(() =>
       viewTraceText: viewTrace === null ? '未记录是否查看' : viewTrace ? '已查看' : '未查看',
       submitSummary,
     };
-  }),
-);
+  });
+});
 
 const timelineNodeCards = computed(() => {
+  const dm = operatorDisplayMap.value;
   const nodes = runtimeNodeList.value;
   const allRows = (timelineRows.value || []) as Array<Record<string, any>>;
   const rows = timelineRowsCurrentRound.value as Array<Record<string, any>>;
@@ -1076,8 +1751,8 @@ const timelineNodeCards = computed(() => {
       latest;
 
     const pendingTask = nodeTasks.find((t) => t.statusNum === 0);
-    const passedTask = nodeTasks.find((t) => t.statusNum === 1);
-    const rejectedTask = nodeTasks.find((t) => t.statusNum === 2);
+    const passedTask = nodeTasks.find((t) => t.statusNum === 2);
+    const rejectedTask = nodeTasks.find((t) => t.statusNum === 3);
     const canceledTask = nodeTasks.find((t) => t.statusNum === 4);
     const reached = nodeRows.length > 0 || nodeTasks.length > 0;
 
@@ -1099,13 +1774,7 @@ const timelineNodeCards = computed(() => {
     const whenRaw =
       latest?.action_at ?? pendingTask?.received_at ?? pendingTask?.receivedAt ?? passedTask?.completed_at ?? passedTask?.completedAt;
     const when = whenRaw ? new Date(whenRaw).toLocaleString() : '—';
-    const actor = String(
-      latest?.operator_name ||
-        latest?.operator_user_id ||
-        pendingTask?.assignee_name ||
-        pendingTask?.assignee_user_id ||
-        '—',
-    );
+    const actor = resolveActorFromLatestAndPending(dm, latest as any, pendingTask as any);
     const comment = String(latestDecision?.comment || '').trim();
     const rejectRowsAll = nodeRowsAll.filter((r) => {
       const a = String(r.action_type || '').trim().toLowerCase();
@@ -1116,9 +1785,12 @@ const timelineNodeCards = computed(() => {
     const latestRejectWhen = latestReject?.action_at
       ? new Date(latestReject.action_at).toLocaleString()
       : '';
-    const latestRejectActor = String(
-      latestReject?.operator_name || latestReject?.operator_user_id || '',
-    ).trim();
+    const latestRejectActorRaw = formatOperatorLabel(
+      dm,
+      latestReject?.operator_name,
+      latestReject?.operator_user_id,
+    );
+    const latestRejectActor = latestRejectActorRaw === '—' ? '' : latestRejectActorRaw;
     const latestRejectComment = String(latestReject?.comment || '').trim();
     const historyRejectText = latestReject
       ? `历史驳回 ${rejectRowsAll.length} 次（最近：${latestRejectWhen || '—'}${latestRejectActor ? `，${latestRejectActor}` : ''}${latestRejectComment ? `，意见：${latestRejectComment}` : ''}）`
@@ -1160,13 +1832,248 @@ function clearMockAssignee() {
 }
 
 async function clearInstanceForNewRun() {
+  runtimePerfLogs.value = [];
   inspectInstanceId.value = '';
   instanceDetail.value = null;
   timelineRows.value = [];
   todoRows.value = [];
   todoTotal.value = 0;
   lastStartResp.value = null;
+  startSubmittedInstanceNo.value = '';
+  startSubmittedHeaderFlowNo.value = '';
+  submittedStartMainForm.value = null;
+  submittedStartTabsData.value = null;
   await resetTaskBoundFormState('');
+}
+
+interface RuntimeStartDraftPayload {
+  processCode?: string;
+  processDefId?: string;
+  businessKey?: string;
+  title?: string;
+  starterDeptId?: string;
+  mockStarterUserId?: string;
+  mockStarterName?: string;
+  mainForm?: Record<string, unknown>;
+  tabsData?: Record<string, unknown>;
+}
+
+function buildRuntimeDraftStorageKey() {
+  const pid = processDefId.value.trim();
+  const pcode = processCode.value.trim();
+  const identity = pid || pcode || 'default';
+  return `wf-runtime-start-draft:${identity}`;
+}
+
+function isEmptyRequiredValue(v: unknown): boolean {
+  if (v === null || v === undefined) return true;
+  if (typeof v === 'string') return v.trim().length === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  return false;
+}
+
+function collectRequiredFieldKeysFromRules(
+  rules: Record<string, WfNodeFormFieldRule> | undefined,
+): { mainKeys: string[]; tabKeys: string[] } {
+  const mainKeys: string[] = [];
+  const tabKeys: string[] = [];
+  for (const [k, rawRule] of Object.entries(rules || {})) {
+    if (normalizeFieldRule(rawRule) !== 'required') continue;
+    if (k.includes('::')) tabKeys.push(k);
+    else mainKeys.push(k);
+  }
+  return { mainKeys, tabKeys };
+}
+
+function buildMainFieldLabelMap(schema: VbenFormSchema[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const item of schema || []) {
+    const key = String(item?.fieldName || '').trim();
+    if (!key) continue;
+    const label = String((item as any)?.label || (item as any)?.fieldLabel || '').trim();
+    map[key] = label || key;
+  }
+  return map;
+}
+
+function quoteCnList(values: string[]): string {
+  return values.map((x) => `【${x}】`).join('、');
+}
+
+function validateRequiredByFieldRules(
+  fieldRules: Record<string, WfNodeFormFieldRule> | undefined,
+  mainForm: Record<string, unknown> | undefined,
+  tabsData?: Record<string, unknown>,
+  mainFieldLabelMap?: Record<string, string>,
+): { message?: string; missingMainKeys?: string[]; valid: boolean } {
+  const main = (mainForm || {}) as Record<string, unknown>;
+  const tabs = (tabsData || {}) as Record<string, unknown>;
+  const { mainKeys, tabKeys } = collectRequiredFieldKeysFromRules(fieldRules);
+  const missingMain = mainKeys.filter((k) => isEmptyRequiredValue(main[k]));
+  if (missingMain.length) {
+    const names = missingMain.map((k) => String(mainFieldLabelMap?.[k] || k).trim() || k);
+    return {
+      valid: false,
+      message: `以下字段未填写：${quoteCnList(names)}`,
+      missingMainKeys: missingMain,
+    };
+  }
+  for (const tk of tabKeys) {
+    const idx = tk.indexOf('::');
+    if (idx <= 0) continue;
+    const tabKey = tk.slice(0, idx).trim();
+    const colKey = tk.slice(idx + 2).trim();
+    if (!tabKey || !colKey) continue;
+    const rows = Array.isArray(tabs[tabKey]) ? (tabs[tabKey] as Array<Record<string, unknown>>) : [];
+    if (!rows.length) {
+      return {
+        valid: false,
+        message: `页签必填字段未填写：${tabKey} -> ${colKey}（无明细行）`,
+      };
+    }
+    const missRow = rows.findIndex((r) => isEmptyRequiredValue((r || {})[colKey]));
+    if (missRow >= 0) {
+      return {
+        valid: false,
+        message: `页签必填字段未填写：${tabKey} 第 ${missRow + 1} 行 -> ${colKey}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
+async function collectStartRuntimePayload(opts?: { validate?: boolean }) {
+  const validate = opts?.validate !== false;
+  let mainForm: Record<string, unknown> = {};
+  let tabsData: Record<string, unknown> | undefined;
+  if (
+    startBoundFormMode.value === 'designer' &&
+    startLayoutIsTabs.value &&
+    startTabsConfig.value.length > 0
+  ) {
+    const prev = startTabsTablePreviewRef.value as null | {
+      validateAllTabs?: () => { valid: boolean; message?: string } | Promise<{ valid: boolean; message?: string }>;
+      getWorkflowRuntimePayload?: () => Promise<{
+        mainForm: Record<string, unknown>;
+        tabsData: Record<string, unknown[]>;
+      }>;
+    };
+    if (validate && prev?.validateAllTabs) {
+      const v = await prev.validateAllTabs();
+      if (v && v.valid === false) {
+        message.error(v.message || '页签表格校验未通过');
+        return null;
+      }
+    }
+    if (prev?.getWorkflowRuntimePayload) {
+      const payload = await prev.getWorkflowRuntimePayload();
+      mainForm = (payload.mainForm || {}) as Record<string, unknown>;
+      tabsData = payload.tabsData as Record<string, unknown>;
+    }
+  } else if (startBoundFormMode.value === 'designer' && startFormSchema.value.length > 0) {
+    mainForm = ((await startBoundFormApi.getValues()) || {}) as Record<string, unknown>;
+  } else {
+    try {
+      mainForm = mainFormJson.value.trim()
+        ? (JSON.parse(mainFormJson.value) as Record<string, unknown>)
+        : {};
+    } catch {
+      message.error('主表单 JSON 格式不正确');
+      return null;
+    }
+  }
+  if (validate) {
+    const v = validateRequiredByFieldRules(
+      startTabsFieldRulesMap.value,
+      mainForm,
+      tabsData as Record<string, unknown> | undefined,
+      buildMainFieldLabelMap(startFormSchema.value as VbenFormSchema[]),
+    );
+    if (!v.valid) {
+      await applyStartRequiredVisual(v.missingMainKeys || []);
+      message.error(v.message || '存在未填写的必填字段');
+      return null;
+    }
+    await applyStartRequiredVisual([]);
+  }
+  return {
+    processCode: processCode.value.trim() || undefined,
+    processDefId: processDefId.value.trim() || undefined,
+    businessKey: businessKey.value.trim() || undefined,
+    title: title.value.trim() || undefined,
+    starterDeptId: starterDeptId.value.trim() || undefined,
+    mockStarterUserId: mockStarterUserId.value.trim() || undefined,
+    mockStarterName: mockStarterName.value.trim() || undefined,
+    mainForm,
+    tabsData,
+  } as RuntimeStartDraftPayload;
+}
+
+async function saveStartDraft() {
+  saveDraftLoading.value = true;
+  try {
+    const payload = await collectStartRuntimePayload({ validate: true });
+    if (!payload) return;
+    const key = buildRuntimeDraftStorageKey();
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        savedAt: new Date().toISOString(),
+        payload,
+      }),
+    );
+    message.success('已保存草稿');
+  } catch (err) {
+    pushDebugEvent('保存草稿', err);
+    message.error('保存草稿失败');
+  } finally {
+    saveDraftLoading.value = false;
+  }
+}
+
+async function restoreStartDraft() {
+  const key = buildRuntimeDraftStorageKey();
+  const raw = localStorage.getItem(key);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw) as {
+      payload?: RuntimeStartDraftPayload;
+    };
+    const payload = parsed?.payload;
+    if (!payload) return;
+    businessKey.value = String(payload.businessKey || '').trim();
+    title.value = String(payload.title || '').trim();
+    starterDeptId.value = String(payload.starterDeptId || '').trim();
+    if (!processCode.value.trim() && payload.processCode) {
+      processCode.value = String(payload.processCode || '').trim();
+    }
+    if (!processDefId.value.trim() && payload.processDefId) {
+      processDefId.value = String(payload.processDefId || '').trim();
+    }
+    if (payload.mockStarterUserId) {
+      mockStarterUserId.value = String(payload.mockStarterUserId || '').trim();
+    }
+    if (payload.mockStarterName) {
+      mockStarterName.value = String(payload.mockStarterName || '').trim();
+    }
+    if (payload.mainForm && typeof payload.mainForm === 'object') {
+      submittedStartMainForm.value = jsonSafeClone(payload.mainForm as Record<string, any>) as Record<
+        string,
+        any
+      >;
+      mainFormJson.value = JSON.stringify(payload.mainForm, null, 2);
+    }
+    if (payload.tabsData && typeof payload.tabsData === 'object') {
+      submittedStartTabsData.value = jsonSafeClone(payload.tabsData as Record<string, any[]>) as Record<
+        string,
+        any[]
+      >;
+    }
+    await loadStartBoundForm();
+    message.success('已恢复草稿');
+  } catch (err) {
+    pushDebugEvent('恢复草稿', err);
+  }
 }
 
 /** 若当前实例仅剩一条待办，则自动把模拟办理人切换为该待办人，便于 A→B 连测 */
@@ -1197,71 +2104,45 @@ async function trySyncMockAssigneeFromInstance(instId: string) {
 async function startRuntime() {
   startLoading.value = true;
   try {
-    let mainForm: Record<string, unknown> = {};
-    let tabsData: Record<string, unknown> | undefined;
-    if (
-      startBoundFormMode.value === 'designer' &&
-      startLayoutIsTabs.value &&
-      startTabsConfig.value.length > 0
-    ) {
-      const prev = startTabsTablePreviewRef.value as null | {
-        validateAllTabs?: () => { valid: boolean; message?: string } | Promise<{ valid: boolean; message?: string }>;
-        getWorkflowRuntimePayload?: () => Promise<{
-          mainForm: Record<string, unknown>;
-          tabsData: Record<string, unknown[]>;
-        }>;
-      };
-      if (prev?.validateAllTabs) {
-        const v = await prev.validateAllTabs();
-        if (v && v.valid === false) {
-          message.error(v.message || '页签表格校验未通过');
-          return;
-        }
-      }
-      if (prev?.getWorkflowRuntimePayload) {
-        const payload = await prev.getWorkflowRuntimePayload();
-        mainForm = (payload.mainForm || {}) as Record<string, unknown>;
-        tabsData = payload.tabsData as Record<string, unknown>;
-      }
-    } else if (startBoundFormMode.value === 'designer' && startFormSchema.value.length > 0) {
-      mainForm = ((await startBoundFormApi.getValues()) || {}) as Record<string, unknown>;
-    } else {
-      try {
-        mainForm = mainFormJson.value.trim()
-          ? (JSON.parse(mainFormJson.value) as Record<string, unknown>)
-          : {};
-      } catch {
-        message.error('主表单 JSON 格式不正确');
-        return;
+    runtimePerfLogs.value = [];
+    if (!businessKey.value.trim()) {
+      businessKey.value = String(startMetaWorkflowNo.value || '').trim();
+    }
+    startSubmittedHeaderFlowNo.value = String(startMetaDisplayFlowNo.value || '').trim();
+    const payload = await collectStartRuntimePayload({ validate: true });
+    if (!payload) return;
+    const mainForm = (payload.mainForm || {}) as Record<string, unknown>;
+    const tabsData = payload.tabsData as Record<string, unknown> | undefined;
+    submittedStartMainForm.value = jsonSafeClone(mainForm as Record<string, any>) as Record<string, any>;
+    submittedStartTabsData.value = tabsData
+      ? (jsonSafeClone(tabsData as Record<string, any[]>) as Record<string, any[]>)
+      : null;
+    mainFormJson.value = JSON.stringify(submittedStartMainForm.value, null, 2);
+    if (startBoundFormMode.value === 'designer') {
+      if (startLayoutIsTabs.value && startTabsConfig.value.length) {
+        startTabsInitialMainValues.value = jsonSafeClone(
+          submittedStartMainForm.value as Record<string, any>,
+        ) as Record<string, any>;
+      } else {
+        await startBoundFormApi.setValues(submittedStartMainForm.value as Record<string, any>);
       }
     }
 
-    const requestPayload = {
-      processCode: processCode.value.trim() || undefined,
-      processDefId: processDefId.value.trim() || undefined,
-      businessKey: businessKey.value.trim() || undefined,
-      title: title.value.trim() || undefined,
-      starterDeptId: starterDeptId.value.trim() || undefined,
-      mockStarterUserId: mockStarterUserId.value.trim() || undefined,
-      mockStarterName: mockStarterName.value.trim() || undefined,
-      mainForm,
-      tabsData,
-    };
+    const requestPayload = payload;
     const resp = await wfEngineRuntimeStart(requestPayload);
     lastStartResp.value = resp as unknown as Record<string, unknown>;
+    startSubmittedInstanceNo.value = String((resp as any)?.instanceNo || '').trim();
     const instId = String((resp as any)?.instanceId || '').trim();
     let autoOpenedApproval = false;
     if (instId) {
       inspectInstanceId.value = instId;
       await trySyncMockAssigneeFromInstance(instId);
-      await loadTodos();
-      await loadInstanceDetail();
-      await loadTimeline();
-      await loadTaskBoundForm();
+      await Promise.all([loadTodos(), loadInstanceDetail(), loadTimeline()]);
+      await profiled('loadTaskBoundForm', () => loadTaskBoundForm());
       /** 无节点专属表单时：仅一条待办则打开意见弹窗（旧测试闭环） */
-      if (todoRows.value.length === 1 && !taskFormHasExclusiveUi()) {
+      if (todoRows.value.length === 1 && !taskFormHasExclusiveUi() && currentPrimaryTodo.value) {
         await nextTick();
-        openAction(todoRows.value[0] as WfEngineRuntimeTodoItem, 'agree');
+        openAction(currentPrimaryTodo.value as WfEngineRuntimeTodoItem, 'agree');
         autoOpenedApproval = true;
       }
     }
@@ -1295,10 +2176,12 @@ async function startRuntime() {
 async function loadTodos() {
   todoLoading.value = true;
   try {
-    const data = await wfEngineRuntimeTodo({
-      page: todoPage.value,
-      pageSize: todoPageSize.value,
-    });
+    const data = await profiled('loadTodos', () =>
+      wfEngineRuntimeTodo({
+        page: todoPage.value,
+        pageSize: todoPageSize.value,
+      }),
+    );
     todoRows.value = data.items || [];
     todoTotal.value = Number(data.total || 0);
   } catch (err) {
@@ -1353,6 +2236,20 @@ async function submitAction() {
     } else if (taskBoundFormMode.value === 'designer' && taskFormSchema.value.length > 0) {
       mainForm = ((await taskBoundFormApi.getValues()) || {}) as Record<string, unknown>;
     }
+    if (taskBoundFormMode.value === 'designer') {
+      const rv = validateRequiredByFieldRules(
+        taskTabsFieldRulesMap.value,
+        mainForm,
+        tabsData as Record<string, unknown> | undefined,
+        buildMainFieldLabelMap(taskFormSchema.value as VbenFormSchema[]),
+      );
+      if (!rv.valid) {
+        await applyTaskRequiredVisual(rv.missingMainKeys || []);
+        message.error(rv.message || '存在未填写的必填字段');
+        return;
+      }
+      await applyTaskRequiredVisual([]);
+    }
     const resp = await wfEngineRuntimeCompleteTask({
       taskId: actionRow.value.taskId,
       action: actionType.value,
@@ -1374,11 +2271,11 @@ async function submitAction() {
       await loadTodos();
       await loadInstanceDetail();
       await loadTimeline();
-      await loadTaskBoundForm();
+      await profiled('loadTaskBoundForm', () => loadTaskBoundForm());
     }
-    if (todoRows.value.length === 1 && !taskFormHasExclusiveUi()) {
+    if (todoRows.value.length === 1 && !taskFormHasExclusiveUi() && currentPrimaryTodo.value) {
       await nextTick();
-      openAction(todoRows.value[0] as WfEngineRuntimeTodoItem, 'agree');
+      openAction(currentPrimaryTodo.value as WfEngineRuntimeTodoItem, 'agree');
     }
   } catch (err) {
     pushDebugEvent(actionType.value === 'agree' ? '同意办理' : '驳回办理', err);
@@ -1395,8 +2292,15 @@ async function loadInstanceDetail() {
   }
   detailLoading.value = true;
   try {
-    const data = await wfEngineRuntimeInstanceDetail(id);
+    const data = await profiled('loadInstanceDetail', () => wfEngineRuntimeInstanceDetail(id));
     instanceDetail.value = data as unknown as Record<string, any>;
+    if ((timelineRows.value || []).length) {
+      try {
+        await refreshOperatorDisplayCache();
+      } catch {
+        /* ignore */
+      }
+    }
   } catch (err) {
     pushDebugEvent('加载实例详情', err);
   } finally {
@@ -1412,7 +2316,14 @@ async function loadTimeline() {
   }
   timelineLoading.value = true;
   try {
-    timelineRows.value = (await wfEngineRuntimeInstanceTimeline(id)) as Array<Record<string, any>>;
+    timelineRows.value = (await profiled('loadTimeline', () =>
+      wfEngineRuntimeInstanceTimeline(id),
+    )) as Array<Record<string, any>>;
+    try {
+      await refreshOperatorDisplayCache();
+    } catch {
+      /* ignore */
+    }
   } catch (err) {
     pushDebugEvent('加载实例轨迹', err);
   } finally {
@@ -1420,99 +2331,230 @@ async function loadTimeline() {
   }
 }
 
-onMounted(async () => {
+let hydrateFromRouteSeq = 0;
+async function hydrateFromRoute() {
+  hydrateFromRouteSeq += 1;
+  const curSeq = hydrateFromRouteSeq;
+
   processCode.value = String(route.query.processCode || '').trim();
   processDefId.value = String(route.query.processDefId || '').trim();
+  const qProcessName = String(route.query.processName || '').trim();
+  if (qProcessName) loadedProcessName.value = qProcessName;
+  runtimeDraftKey.value = String(route.query.runtimeDraftKey || '').trim();
+  applyRuntimeDraftByKey(runtimeDraftKey.value);
+  inspectInstanceId.value = String(route.query.instanceId || '').trim();
   mockStarterUserId.value = String(route.query.mockStarterUserId || '').trim();
   mockStarterName.value = String(route.query.mockStarterName || '').trim();
   mockStarterDeptName.value = String(route.query.mockStarterDeptName || '').trim();
   mockStarterPositionName.value = String(route.query.mockStarterPositionName || '').trim();
-  await loadStartBoundForm();
-  inspectInstanceId.value = String(route.query.instanceId || '').trim();
-  await loadTodos();
-  if (inspectInstanceId.value) {
-    await loadInstanceDetail();
-    await loadTimeline();
-    await loadTaskBoundForm();
+
+  // 若带了草稿定义，则统一用草稿定义渲染运行台（不区分发起/实例查看）
+  if (runtimeDraftDefinitionJson.value.trim()) {
+    runtimeDefinitionJson.value = runtimeDraftDefinitionJson.value.trim();
   }
-});
+
+  // 只在“发起流程”模式下加载发起节点绑定表单；查看实例时不要干扰界面
+  if (!inspectInstanceId.value.trim()) {
+    submittedStartMainForm.value = null;
+    submittedStartTabsData.value = null;
+    await loadStartBoundForm();
+  }
+
+  await loadTodos();
+  if (curSeq !== hydrateFromRouteSeq) return;
+
+  if (inspectInstanceId.value.trim()) {
+    await loadInstanceDetail();
+    if (curSeq !== hydrateFromRouteSeq) return;
+    await loadTimeline();
+    if (curSeq !== hydrateFromRouteSeq) return;
+    await profiled('loadTaskBoundForm', () => loadTaskBoundForm());
+  }
+}
+
+watch(
+  () => route.fullPath,
+  async () => {
+    await hydrateFromRoute();
+  },
+  { immediate: true },
+);
+
+watch(
+  showDebugPanel,
+  (v) => {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(DEBUG_PANEL_OPEN_KEY, v ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  },
+  { immediate: true },
+);
 
 async function refreshTodosAndTaskForm() {
   await loadTodos();
-  await loadTaskBoundForm();
+  await profiled('loadTaskBoundForm', () => loadTaskBoundForm());
 }
 
 watch(
   () =>
     [
       processDefId.value,
+      runtimeDraftDefinitionJson.value,
       mockStarterUserId.value,
       mockStarterName.value,
       mockStarterDeptName.value,
       mockStarterPositionName.value,
     ] as const,
   async () => {
+    refreshStartFixedMeta({ keepWorkflowNo: true });
     await loadStartBoundForm();
   },
+);
+
+/** 新开页时 userInfo / token 可能晚于首次 loadStartBoundForm，需回填内置字段 */
+watch(
+  () => [userStore.userInfo, accessStore.accessToken] as const,
+  async () => {
+    refreshStartFixedMeta({ keepWorkflowNo: true });
+    if (inspectInstanceId.value.trim()) return;
+    if (!processDefId.value.trim() && !runtimeDraftDefinitionJson.value.trim()) return;
+    await loadStartBoundForm();
+  },
+  { deep: true },
+);
+
+watch(
+  () => [processCode.value, processDefId.value, runtimeDraftDefinitionJson.value] as const,
+  () => {
+    startSubmittedHeaderFlowNo.value = '';
+    submittedStartMainForm.value = null;
+    submittedStartTabsData.value = null;
+    refreshStartFixedMeta({ keepWorkflowNo: false });
+  },
+  { immediate: true },
+);
+
+watch(
+  isMobilePreviewMode,
+  async () => {
+    await startBoundFormApi.setState(buildStartFormUiState(startFormSchema.value as VbenFormSchema[]));
+    await taskBoundFormApi.setState(buildTaskFormUiState(taskFormSchema.value as VbenFormSchema[]));
+  },
+  { immediate: true },
 );
 </script>
 
 <template>
   <Page title="发起流程" :description="pageDescription" content-class="min-h-0">
-    <ProcessPreviewShell :frame="false">
-      <div class="flex flex-col gap-4">
+    <ProcessPreviewShell :frame="isMobilePreviewMode">
+      <div class="flex flex-col gap-4" :class="isMobilePreviewMode ? 'wf-mobile-single gap-3' : ''">
         <Card size="small" :title="primaryFlowCardTitle">
+          <template v-if="!inspectInstanceId.trim()" #extra>
+            <Space>
+              <Button @click="restoreStartDraft">恢复草稿</Button>
+              <Button :loading="saveDraftLoading" @click="saveStartDraft">保存</Button>
+              <Button type="primary" :loading="startLoading" @click="startRuntime">
+                提交
+              </Button>
+            </Space>
+          </template>
           <template v-if="!inspectInstanceId.trim()">
             <div
-              v-if="
-                startBoundFormMode === 'designer' &&
-                startFormSchema.length > 0 &&
-                startLayoutIsTabs &&
-                startTabsConfig.length
-              "
+              v-if="isMobilePreviewMode"
+              class="mb-3 divide-border/55 flex flex-col divide-y text-sm"
             >
-              <FormTabsTablePreview
-                ref="startTabsTablePreviewRef"
-                :form-schema="(startFormSchema as any)"
-                :tabs="startTabsConfig"
-                :field-rules-map="startTabsFieldRulesMap"
-                :show-form="true"
-                wrapper-class="grid-cols-1 md:grid-cols-2 gap-x-[2px] gap-y-[2px]"
-                layout="horizontal"
-                :label-width="110"
-                :initial-main-form-values="startTabsInitialMainValues"
-              />
-              <div class="mt-6 flex justify-end border-t pt-4">
-                <Button type="primary" size="large" :loading="startLoading" @click="startRuntime">
-                  提交
-                </Button>
+              <div
+                v-for="r in mobileStartHeaderRows"
+                :key="r.key"
+                class="flex flex-col gap-1 py-3 first:pt-1 last:pb-1"
+              >
+                <span class="text-muted-foreground text-[11px] leading-tight">{{ r.label }}</span>
+                <Tag v-if="r.isStatus" color="processing" class="w-fit">
+                  {{ r.value }}
+                </Tag>
+                <div v-else class="break-words text-[13px] leading-snug">{{ r.value }}</div>
               </div>
             </div>
-            <div v-else-if="startBoundFormMode === 'designer' && startFormSchema.length > 0">
-              <StartBoundForm />
-              <div class="mt-6 flex justify-end border-t pt-4">
-                <Button type="primary" size="large" :loading="startLoading" @click="startRuntime">
-                  提交
-                </Button>
+            <div v-else class="mb-3 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+              <div>
+                <span class="text-muted-foreground">流程编号：</span>
+                {{ startMetaDisplayFlowNo }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">流程名称：</span>
+                {{ loadedProcessName || primaryFlowCardTitle || '—' }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">发起人：</span>
+                {{ startMetaStarter || '—' }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">发起时间：</span>
+                {{ startMetaTime }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">工号：</span>
+                {{ startMetaDisplayEmployeeNo }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">部门：</span>
+                {{ startMetaDisplayDept }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">岗位：</span>
+                {{ startMetaDisplayPosition }}
+              </div>
+              <div class="md:col-span-2">
+                <span class="text-muted-foreground">当前状态：</span>
+                <Tag color="processing">发起中</Tag>
+              </div>
+              <div class="md:col-span-2">
+                <span class="text-muted-foreground">当前节点：</span>
+                {{ startMetaNodeName }}
               </div>
             </div>
-            <div v-else-if="startBoundFormMode === 'ext'">
-              <component v-if="startExtRuntimeRoot" :is="startExtRuntimeRoot" />
-              <div v-else class="text-muted-foreground py-8 text-center">表单加载中…</div>
-              <div class="mt-6 flex justify-end border-t pt-4">
-                <Button type="primary" size="large" :loading="startLoading" @click="startRuntime">
-                  提交
-                </Button>
-              </div>
-            </div>
-            <div v-else>
-              <p class="text-muted-foreground mb-4 text-sm leading-relaxed">
-                当前流程未配置可视化发起表单。请联系管理员配置发起节点绑定，或在下方「调试」面板使用 JSON 发起。
-              </p>
-              <div class="flex justify-end">
-                <Button type="primary" size="large" :loading="startLoading" @click="startRuntime">
-                  提交
-                </Button>
+            <div class="border-border border-t pt-1">
+              <div class="wf-viewer-form-tight">
+                <div
+                  v-if="
+                    startBoundFormMode === 'designer' &&
+                    startFormSchema.length > 0 &&
+                    startLayoutIsTabs &&
+                    startTabsConfig.length
+                  "
+                >
+                  <FormTabsTablePreview
+                    ref="startTabsTablePreviewRef"
+                    :form-schema="(startFormSchema as any)"
+                    :tabs="startTabsConfig"
+                    :field-rules-map="startTabsFieldRulesMap"
+                    :show-form="true"
+                    :grid-height="120"
+                    :compact="true"
+                    :hide-single-tab-nav="false"
+                    :wrapper-class="
+                      isMobilePreviewMode
+                        ? 'wf-mobile-form-single grid-cols-1 gap-y-2'
+                        : 'grid-cols-1 md:grid-cols-2 gap-x-[2px] gap-y-[2px]'
+                    "
+                    :layout="isMobilePreviewMode ? 'vertical' : 'horizontal'"
+                    :label-width="isMobilePreviewMode ? 88 : 110"
+                    :initial-main-form-values="startTabsInitialMainValues"
+                  />
+                </div>
+                <div v-else-if="startBoundFormMode === 'designer' && startFormSchema.length > 0">
+                  <StartBoundForm />
+                </div>
+                <div v-else-if="startBoundFormMode === 'ext'">
+                  <component v-if="startExtRuntimeRoot" :is="startExtRuntimeRoot" />
+                  <div v-else class="text-muted-foreground py-2 text-center text-sm">表单加载中…</div>
+                </div>
+                <div v-else class="text-muted-foreground py-2 text-sm leading-relaxed">
+                  当前流程未配置可视化发起表单。请联系管理员配置发起节点绑定，或在下方「调试」面板使用 JSON 发起。
+                </div>
               </div>
             </div>
           </template>
@@ -1521,7 +2563,7 @@ watch(
             <div class="mb-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
               <div>
                 <span class="text-muted-foreground">流程编号：</span>
-                {{ instanceDetail?.instance?.instance_no || '—' }}
+                {{ instanceMetaDisplayFlowNo }}
               </div>
               <div>
                 <span class="text-muted-foreground">流程名称：</span>
@@ -1529,7 +2571,7 @@ watch(
               </div>
               <div>
                 <span class="text-muted-foreground">发起人：</span>
-                {{ instanceDetail?.instance?.starter_user_id || '—' }}
+                {{ instanceMetaDisplayStarter }}
               </div>
               <div>
                 <span class="text-muted-foreground">发起时间：</span>
@@ -1543,25 +2585,64 @@ watch(
                     : '—'
                 }}
               </div>
+              <div>
+                <span class="text-muted-foreground">工号：</span>
+                {{ instanceMetaDisplayEmployeeNo }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">部门：</span>
+                {{ instanceMetaDisplayDept }}
+              </div>
+              <div>
+                <span class="text-muted-foreground">岗位：</span>
+                {{ instanceMetaDisplayPosition }}
+              </div>
               <div class="md:col-span-2">
                 <span class="text-muted-foreground">当前状态：</span>
                 <Tag :color="instanceMetaStatus.color">{{ instanceMetaStatus.text }}</Tag>
               </div>
               <div class="md:col-span-2">
                 <span class="text-muted-foreground">当前节点：</span>
-                {{ resolvedCurrentNodeId || '—' }}
+                {{ runtimeNodeNameMap[resolvedCurrentNodeId] || resolvedCurrentNodeId || '—' }}
+              </div>
+            </div>
+
+            <div
+              v-if="SHOW_RUNTIME_PERF_LOG && runtimePerfLogs.length"
+              class="mb-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs"
+            >
+              <div class="mb-1 font-medium text-amber-800">加载耗时日志（本次）</div>
+              <div
+                v-for="(p, idx) in runtimePerfLogs.slice(0, 8)"
+                :key="`${p.at}-${p.name}-${idx}`"
+                class="flex flex-wrap items-center gap-2"
+              >
+                <span class="text-amber-700">{{ p.at }}</span>
+                <span class="font-medium">{{ p.name }}</span>
+                <span :class="p.ok ? 'text-emerald-600' : 'text-red-600'">
+                  {{ p.ok ? 'OK' : 'FAIL' }}
+                </span>
+                <span class="text-muted-foreground">{{ p.ms }}ms</span>
+                <span v-if="p.error" class="text-red-600">{{ p.error }}</span>
               </div>
             </div>
 
             <div v-if="taskBoundFormLoading" class="text-muted-foreground border-border mt-4 border-t pt-4 text-center text-sm">
               正在加载当前节点绑定表单…
             </div>
-            <div v-else-if="currentPrimaryTodo" class="border-border mt-4 border-t pt-4">
+            <div v-else-if="taskBoundFormMode !== 'none' && resolvedCurrentNodeId" class="border-border mt-4 border-t pt-4">
               <div class="mb-2 text-sm font-medium">
-                办理节点：{{ currentPrimaryTodo.nodeName }}（{{ currentPrimaryTodo.nodeId }}）
+                {{
+                  currentPrimaryTodo
+                    ? `办理节点：${currentPrimaryTodo.nodeName}（${currentPrimaryTodo.nodeId}）`
+                    : `当前节点只读预览：${runtimeNodeNameMap[resolvedCurrentNodeId] || resolvedCurrentNodeId}`
+                }}
               </div>
               <p v-if="taskBindingHint" class="text-muted-foreground mb-3 text-xs leading-relaxed">
                 {{ taskBindingHint }}
+              </p>
+              <p v-if="taskBoundFormReuseError" class="mb-3 text-xs leading-relaxed text-red-500">
+                复用失败原因：{{ taskBoundFormReuseError }}
               </p>
               <div
                 v-if="
@@ -1577,9 +2658,13 @@ watch(
                   :tabs="taskTabsConfig"
                   :field-rules-map="taskTabsFieldRulesMap"
                   :show-form="true"
-                  wrapper-class="grid-cols-1 md:grid-cols-2 gap-x-[2px] gap-y-[2px]"
-                  layout="horizontal"
-                  :label-width="110"
+                  :wrapper-class="
+                    isMobilePreviewMode
+                      ? 'wf-mobile-form-single grid-cols-1 gap-y-2'
+                      : 'grid-cols-1 md:grid-cols-2 gap-x-[2px] gap-y-[2px]'
+                  "
+                  :layout="isMobilePreviewMode ? 'vertical' : 'horizontal'"
+                  :label-width="isMobilePreviewMode ? 88 : 110"
                   :initial-main-form-values="taskTabsInitialMainValues"
                 />
               </div>
@@ -1624,7 +2709,7 @@ watch(
           </template>
         </Card>
 
-        <Card size="small">
+        <Card size="small" class="wf-viewer-tabs-card">
           <Tabs>
             <Tabs.TabPane key="nodes" tab="流程节点">
               <RuntimeGraphReadonly
@@ -1859,4 +2944,169 @@ watch(
     </Modal>
   </Page>
 </template>
+
+<style scoped>
+.wf-viewer-form-tight {
+  padding-top: 5px;
+}
+
+.wf-viewer-tabs-card :deep(.ant-card-body) {
+  padding-top: 6px !important;
+}
+
+.wf-viewer-tabs-card :deep(.ant-tabs-nav) {
+  margin: 0 0 6px 0 !important;
+}
+
+.wf-viewer-form-tight :deep(.form-tabs-table-preview > div.mb-4) {
+  margin-bottom: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.form-tabs-table-preview > div.mt-4) {
+  margin-top: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.form-tabs-table-preview .py-2) {
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.form-tabs-table-preview .mb-2) {
+  margin-bottom: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-form-item) {
+  margin-bottom: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-form-item-label) {
+  padding-bottom: 0 !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-form-item-control) {
+  min-height: auto !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-input),
+.wf-viewer-form-tight :deep(.ant-input-affix-wrapper),
+.wf-viewer-form-tight :deep(.ant-select-selector) {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-tabs-nav) {
+  margin: 0 0 5px 0 !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-tabs-content) {
+  padding-top: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-table) {
+  margin-top: 5px !important;
+}
+
+.wf-viewer-form-tight :deep(.ant-table-container) {
+  border-radius: 6px;
+}
+
+:deep(.wf-required-missing .ant-form-item-label > label::after) {
+  content: ' 必填';
+  color: #ff4d4f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:deep(.wf-required-mark .ant-form-item-label) {
+  padding-left: 0 !important;
+}
+
+:deep(.wf-required-mark .ant-form-item-label::before) {
+  content: '';
+}
+
+:deep(.wf-required-mark .ant-form-item-control-input-content) {
+  position: relative;
+  overflow: visible !important;
+}
+
+:deep(.wf-required-mark .ant-form-item-control-input-content::after) {
+  content: '*';
+  position: absolute;
+  right: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #ff4d4f;
+  font-weight: 700;
+  line-height: 1;
+  z-index: 2;
+}
+
+:deep(label.wf-required-missing-label::after) {
+  content: ' 必填';
+  color: #ff4d4f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:deep(.wf-required-inline-star) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 10px;
+  color: #ff4d4f;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+:deep(.wf-required-missing .ant-input),
+:deep(.wf-required-missing .ant-input-affix-wrapper),
+:deep(.wf-required-missing .ant-select-selector),
+:deep(.wf-required-missing .ant-picker),
+:deep(.wf-required-missing .ant-input-number),
+:deep(.wf-required-missing .ant-input-number-affix-wrapper) {
+  border-color: #ff4d4f !important;
+  box-shadow: 0 0 0 2px rgb(255 77 79 / 12%) !important;
+}
+
+.wf-mobile-single :deep(.md\:grid-cols-2),
+.wf-mobile-single :deep(.grid-cols-2) {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.wf-mobile-single :deep(.wf-mobile-form-single) {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.wf-mobile-single :deep(.wf-viewer-form-tight .grid),
+.wf-mobile-single :deep(.wf-viewer-form-tight [class*='grid-cols-']) {
+  grid-template-columns: minmax(0, 1fr) !important;
+  column-gap: 0 !important;
+}
+
+.wf-mobile-single :deep(.ant-form-item) {
+  width: 100% !important;
+}
+
+.wf-mobile-single :deep(.ant-form-item-control),
+.wf-mobile-single :deep(.ant-form-item-control-input),
+.wf-mobile-single :deep(.ant-form-item-control-input-content) {
+  width: 99% !important;
+}
+
+.wf-mobile-single :deep(.ant-input),
+.wf-mobile-single :deep(.ant-input-affix-wrapper),
+.wf-mobile-single :deep(.ant-select),
+.wf-mobile-single :deep(.ant-select-selector),
+.wf-mobile-single :deep(.ant-picker),
+.wf-mobile-single :deep(.ant-input-number),
+.wf-mobile-single :deep(.ant-input-number-affix-wrapper),
+.wf-mobile-single :deep(textarea.ant-input) {
+  width: 99% !important;
+  max-width: 99% !important;
+}
+</style>
 
